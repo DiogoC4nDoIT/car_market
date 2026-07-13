@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "*/30 * * * *"   # incremental crawl every 30 min
     - cron: "0 3 * * 0"      # weekly deep sweep (Sunday 03:00 UTC)
+    - cron: "0 8 * * *"      # daily Telegram digest (08:00 UTC)
   workflow_dispatch:
     inputs:
       deep_sweep:
@@ -29,4 +30,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEEP_SWEEP: ${{ (github.event.schedule == '0 3 * * 0' || inputs.deep_sweep) && '1' || '0' }}
-        run: python -m src.crawler
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 8 * * *" ]; then
+            python -m src.digest
+          else
+            python -m src.crawler
+          fi

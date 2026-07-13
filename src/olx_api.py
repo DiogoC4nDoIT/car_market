@@ -74,6 +74,15 @@ def discover_category_id() -> int | None:
     return None
 
 
+def _first_photo(o: dict) -> str | None:
+    photos = o.get("photos") or []
+    if not photos:
+        return None
+    # link is a template like ".../image;s={width}x{height}"
+    link = photos[0].get("link") or ""
+    return link.replace("{width}", "800").replace("{height}", "600") or None
+
+
 def parse_offer(o: dict) -> dict:
     """Flatten one OLX offer into our ads row."""
     params, price = {}, None
@@ -101,6 +110,7 @@ def parse_offer(o: dict) -> dict:
     return {
         "id": o["id"],
         "url": o.get("url"),
+        "photo_url": _first_photo(o),
         "title": o.get("title"),
         "price": price,
         "brand": pick("marca", "brand", "motorbrand", "carbrand") or guess_brand(o.get("title")),
@@ -137,7 +147,8 @@ def fetch_page(category_id: int, offset: int = 0,
 # Price buckets used by the weekly deep sweep to bypass the offset cap.
 SWEEP_BUCKETS = [(0, 250), (250, 500), (500, 750), (750, 1000), (1000, 1250),
                  (1250, 1500), (1500, 1750), (1750, 2000), (2000, 2500),
-                 (2500, 3000), (3000, 4000), (4000, 5000), (5000, 6000)]
+                 (2500, 3000), (3000, 4000), (4000, 5000), (5000, 6000),
+                 (6000, 8000), (8000, 10000), (10000, 12500), (12500, 15000)]
 
 
 def fetch_deep_sweep(category_id: int, price_ceiling: float) -> list[dict]:
