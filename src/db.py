@@ -122,16 +122,28 @@ def ads_to_check(limit: int, lookback_days: int, priority_ids: list[int] = ()) -
                 seen.add(r["id"])
                 out.append(r)
 
-    res = (client().table("ads").select("id, url")
-           .or_("url_status.is.null,url_status.eq.active")
-           .gte("first_seen", since)
-           .order("url_checked_at", nullsfirst=True)
-           .limit(limit).execute())
-    for r in res.data:
-        if r["id"] not in seen:
-            seen.add(r["id"])
-            out.append(r)
-    return out
+    # PostgREST caps rows per request (project's db-max-rows, typically 1000)
+    # regardless of the client-requested .limit(), so page through .range() —
+    # same pattern as read_view() — to actually reach `limit` when it's larger.
+    backlog_target = len(out) + limit
+    page = 0
+    while len(out) < backlog_target:
+        lo, hi = page * 1000, page * 1000 + 999
+        res = (client().table("ads").select("id, url")
+               .or_("url_status.is.null,url_status.eq.active")
+               .gte("first_seen", since)
+               .order("url_checked_at", nullsfirst=True)
+               .range(lo, hi).execute())
+        if not res.data:
+            break
+        for r in res.data:
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                out.append(r)
+        if len(res.data) < 1000:
+            break
+        page += 1
+    return out[:backlog_target]
 
 
 def update_url_status(rows: list[dict]):
