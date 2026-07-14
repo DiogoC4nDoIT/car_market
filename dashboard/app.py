@@ -3,7 +3,7 @@ Deploy free at https://share.streamlit.io (secrets: SUPABASE_URL, SUPABASE_KEY).
 """
 import html
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
@@ -149,6 +149,50 @@ def load_ads_page(offset, limit):
     return pd.DataFrame(q.range(offset, offset + limit - 1).execute().data)
 
 
+KM_BANDS = (150_000, 250_000)  # mirrors src/config.py:KM_BANDS; dashboard is
+                                # intentionally standalone from the crawler process (CLAUDE.md)
+
+
+def km_band(mileage) -> int:
+    """Mirrors src/deal_engine.py:km_band() — must match market_stats_fine's CASE bucketing."""
+    lo, hi = KM_BANDS
+    if mileage < lo:
+        return 0
+    return lo if mileage < hi else hi
+
+
+def fine_key(brand, model, year_bucket, fuel, mileage):
+    """Mirrors src/deal_engine.py:fine_key()."""
+    return (str(brand).lower(), str(model).lower(), int(year_bucket), str(fuel).lower(), km_band(mileage))
+
+
+@st.cache_data(ttl=120)
+def load_comps(brand, model, year_lo, year_hi, fuel=None, mileage_lo=None, mileage_hi=None):
+    """Fetch comps directly from Supabase (uncapped), unlike the 5000-row `ads` df, and —
+    when a fuel/mileage band is given — matching the same fine basis deal_engine.evaluate()
+    used to pick this deal's median (see fine_key() above)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    q = (sb().table("ads").select("*")
+         .eq("brand", brand).eq("model", model)
+         .gte("year", year_lo).lte("year", year_hi)
+         .eq("is_blacklisted", False).gt("price", 100).gte("last_seen", cutoff))
+    if fuel is not None:
+        q = q.eq("fuel", fuel)
+    if mileage_lo is not None:
+        q = q.gte("mileage", mileage_lo)
+    if mileage_hi is not None:
+        q = q.lt("mileage", mileage_hi)
+    rows, offset, limit = [], 0, 2000
+    while offset < limit:
+        chunk = min(1000, limit - offset)
+        page = q.range(offset, offset + chunk - 1).execute().data
+        rows.extend(page)
+        if len(page) < chunk:
+            break
+        offset += chunk
+    return pd.DataFrame(rows)
+
+
 @st.cache_data(ttl=120)
 def load_price_history(ad_ids: tuple):
     """price_history has no brand/model of its own, so trend lookups are keyed off
@@ -241,6 +285,7 @@ deals = load("deals_view", order="created_at")
 ads = load("ads", order="first_seen", limit=5000)
 runs = load("crawl_runs", order="started_at", limit=1)
 stats = load("market_stats")
+fine_stats = load("market_stats_fine")
 liq = load("market_liquidity")
 flags = load("ad_flags")
 
@@ -832,13 +877,32 @@ def render_detail(ad_id):
     st.write("")
     st.markdown("**Similar Ads**")
     bucket = int(d["year_bucket"])
-    comps = ads[
-        (ads["brand"] == d["brand"]) & (ads["model"] == d["model"])
-        & ((ads["year"] // 2 * 2) == bucket)
-    ].dropna(subset=["price"])
+    fuel, mileage = d.get("fuel"), d.get("mileage")
+    fine_basis = False
+    mileage_lo = mileage_hi = None
+    if pd.notna(fuel) and pd.notna(mileage):
+        # Mirrors evaluate()'s preference order (src/deal_engine.py) — if a fine
+        # (fuel + mileage-band) match exists, that's the basis the stored median/n
+        # used, so comps must match it too, not just brand/model/year_bucket.
+        key = fine_key(d["brand"], d["model"], bucket, fuel, mileage)
+        match = fine_stats[
+            (fine_stats["brand"].str.lower() == key[0]) & (fine_stats["model"].str.lower() == key[1])
+            & (fine_stats["year_bucket"] == key[2]) & (fine_stats["fuel"].str.lower() == key[3])
+            & (fine_stats["km_band"] == key[4])
+        ]
+        if not match.empty:
+            fine_basis = True
+            band_lo = km_band(mileage)
+            mileage_lo = band_lo
+            mileage_hi = KM_BANDS[0] if band_lo == 0 else (KM_BANDS[1] if band_lo == KM_BANDS[0] else None)
+    comps = load_comps(
+        d["brand"], d["model"], bucket, bucket + 1,
+        fuel=fuel if fine_basis else None,
+        mileage_lo=mileage_lo, mileage_hi=mileage_hi,
+    ).dropna(subset=["price"])
     if ad_id not in comps["id"].values:
-        # The opened ad may fall outside the ads dataframe's 5000-row cap (ordered by
-        # first_seen) — always include it in its own comps so ranking/"THIS AD" is correct.
+        # A just-crawled ad may not be reflected in the cached query yet — always
+        # include it in its own comps so ranking/"THIS AD" is correct.
         comps = pd.concat([comps, pd.DataFrame([{
             "id": ad_id, "price": d["price"], "mileage": d.get("mileage"), "year": d.get("year"),
             "region": d.get("region"), "fuel": d.get("fuel"), "url": d["url"],
@@ -853,8 +917,9 @@ def render_detail(ad_id):
         self_rows = comps[comps["id"] == ad_id]
         self_rank = int(self_rows["rank"].iloc[0]) if not self_rows.empty else None
         if self_rank:
+            basis_note = f", {esc(fuel)}" if fine_basis else ""
             st.caption(f"This ad ranks #{self_rank} cheapest of {len(comps)} comparable listings "
-                       f"({d['brand']} {d['model']}, {bucket}–{bucket + 1})")
+                       f"({d['brand']} {d['model']}, {bucket}–{bucket + 1}{basis_note})")
         for _, cm in comps.iterrows():
             is_self = cm["id"] == ad_id
             delta = cm["price"] - d["price"]
