@@ -302,22 +302,53 @@ def render_deals_tab():
     if year_lo == year_hi:
         year_hi += 1
 
+    # Streamlit clears a widget's session_state entry on any run where the widget isn't
+    # instantiated (e.g. while a deal's detail view is showing instead of this tab), so
+    # keying the widgets alone doesn't survive an Open -> Back round trip. Keep the real
+    # values in this plain dict instead, which is never subject to that auto-clear.
+    st.session_state.setdefault("deals_filters", {})
+    saved = st.session_state.deals_filters
+
+    def clamp(pair, lo, hi):
+        a, b = pair
+        return max(lo, min(a, hi)), max(lo, min(b, hi))
+
+    def restore_index(options, saved_value):
+        return options.index(saved_value) if saved_value in options else 0
+
     with st.container(border=True):
         f1, f2, f3 = st.columns(3)
-        min_profit, max_profit = f1.slider("PROFIT (€)", profit_lo, profit_hi, (profit_lo, profit_hi),
-                                            step=10, key="deals_filter_profit")
-        min_km, max_km = f2.slider("MILEAGE (KM)", km_lo, km_hi, (km_lo, km_hi),
-                                    step=1000, key="deals_filter_km")
-        min_year, max_year = f3.slider("YEAR", year_lo, year_hi, (year_lo, year_hi), key="deals_filter_year")
+        min_profit, max_profit = f1.slider(
+            "PROFIT (€)", profit_lo, profit_hi,
+            clamp(saved.get("profit", (profit_lo, profit_hi)), profit_lo, profit_hi),
+            step=10, key="deals_filter_profit",
+        )
+        min_km, max_km = f2.slider(
+            "MILEAGE (KM)", km_lo, km_hi,
+            clamp(saved.get("km", (km_lo, km_hi)), km_lo, km_hi),
+            step=1000, key="deals_filter_km",
+        )
+        min_year, max_year = f3.slider(
+            "YEAR", year_lo, year_hi,
+            clamp(saved.get("year", (year_lo, year_hi)), year_lo, year_hi),
+            key="deals_filter_year",
+        )
         f4, f5, f6, f7 = st.columns(4)
-        brand_opts = sorted(deals["brand"].dropna().unique())
-        brand = f4.selectbox("BRAND", ["All brands"] + brand_opts, key="deals_filter_brand")
-        region_opts = sorted(deals["region"].dropna().unique())
-        region = f5.selectbox("REGION", ["All regions"] + region_opts, key="deals_filter_region")
-        conf = f6.selectbox("TRUST", ["All levels", "alta", "media", "baixa"],
+        brand_opts = ["All brands"] + sorted(deals["brand"].dropna().unique())
+        brand = f4.selectbox("BRAND", brand_opts, index=restore_index(brand_opts, saved.get("brand")),
+                              key="deals_filter_brand")
+        region_opts = ["All regions"] + sorted(deals["region"].dropna().unique())
+        region = f5.selectbox("REGION", region_opts, index=restore_index(region_opts, saved.get("region")),
+                               key="deals_filter_region")
+        trust_opts = ["All levels", "alta", "media", "baixa"]
+        conf = f6.selectbox("TRUST", trust_opts, index=restore_index(trust_opts, saved.get("trust")),
                              format_func=lambda c: c if c == "All levels" else CONF_META[c][0],
                              key="deals_filter_trust")
-        only_active = f7.checkbox("Active listings only", value=True, key="deals_filter_active")
+        only_active = f7.checkbox("Active listings only", value=saved.get("active", True),
+                                   key="deals_filter_active")
+
+    saved.update(profit=(min_profit, max_profit), km=(min_km, max_km), year=(min_year, max_year),
+                 brand=brand, region=region, trust=conf, active=only_active)
 
     view = deals[~deals["ad_id"].isin(st.session_state.skipped_ids)]
     view = view[(view["est_profit"] >= min_profit) & (view["est_profit"] <= max_profit)]
