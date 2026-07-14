@@ -36,6 +36,23 @@ def money(x):
     return f"€{x:,.0f}"
 
 
+def render_bar_list(rows, label_fn, value_fn, fmt_fn, color="linear-gradient(90deg,#1c3d2e,#3f8659)"):
+    max_val = max((value_fn(r) for r in rows), default=0)
+    for r in rows:
+        v = value_fn(r)
+        pct = v / max_val * 100 if max_val else 0
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
+            f'<span style="width:220px;flex:none;font-size:12px;color:#5b5647;overflow:hidden;'
+            f'text-overflow:ellipsis;white-space:nowrap">{esc(label_fn(r))}</span>'
+            f'<div style="flex:1;height:16px;background:#e8dfca;border-radius:4px;overflow:hidden">'
+            f'<div style="height:100%;background:{color};width:{pct:.0f}%"></div></div>'
+            f'<span style="width:70px;flex:none;text-align:right;font:500 12px \'JetBrains Mono\',monospace">'
+            f'{fmt_fn(v)}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+
 def verdict_for(score):
     if score >= 85:
         return "Strong", "#1c3d2e", "#e8c07a"
@@ -90,10 +107,21 @@ def sb():
 
 @st.cache_data(ttl=120)
 def load(table, order=None, limit=2000):
+    """PostgREST caps a single request at its configured max-rows (commonly 1000)
+    regardless of the .limit() we pass, so page via .range() until `limit` is hit
+    or the table's exhausted — otherwise `limit=5000` silently truncates to ~1000."""
     q = sb().table(table).select("*")
     if order:
         q = q.order(order, desc=True)
-    return pd.DataFrame(q.limit(limit).execute().data)
+    rows, offset = [], 0
+    while offset < limit:
+        chunk = min(1000, limit - offset)
+        page = q.range(offset, offset + chunk - 1).execute().data
+        rows.extend(page)
+        if len(page) < chunk:
+            break
+        offset += chunk
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=120)
@@ -105,6 +133,21 @@ def count_rows(table):
 def load_ads_page(offset, limit):
     q = sb().table("ads").select("*").order("first_seen", desc=True)
     return pd.DataFrame(q.range(offset, offset + limit - 1).execute().data)
+
+
+@st.cache_data(ttl=120)
+def load_price_history(ad_ids: tuple):
+    """price_history has no brand/model of its own, so trend lookups are keyed off
+    a caller-supplied set of ad ids (usually from an already brand/model-filtered
+    ads slice) and batched at 500 ids/request like db.py's known_prices()."""
+    if not ad_ids:
+        return pd.DataFrame()
+    frames = []
+    for i in range(0, len(ad_ids), 500):
+        chunk = list(ad_ids[i:i + 500])
+        res = sb().table("price_history").select("*").in_("ad_id", chunk).execute()
+        frames.append(pd.DataFrame(res.data))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def minutes_since(ts: str) -> float:
@@ -382,72 +425,167 @@ def render_market_tab():
         st.info("Market stats appear once ≥5 comparable ads exist per model.")
         return
 
-    display = stats.merge(liq, on=["brand", "model", "year_bucket"], how="left") if not liq.empty else stats.copy()
-    display = display.sort_values("n", ascending=False, na_position="last")
-    total_models = len(display)
+    brand_opts = sorted(set(stats["brand"].dropna()) | set(ads["brand"].dropna()))
+    region_opts = sorted(ads["region"].dropna().unique())
+    fuel_opts = sorted(ads["fuel"].dropna().unique())
+    year_series = ads["year"].dropna()
+    yr_lo_b, yr_hi_b = (int(year_series.min()), int(year_series.max())) if not year_series.empty else (1980, 2030)
+    if yr_lo_b == yr_hi_b:
+        yr_hi_b += 1
+    price_series = ads["price"].dropna()
+    p_lo_b, p_hi_b = (int(price_series.min()), int(price_series.max())) if not price_series.empty else (0, 100_000)
+    if p_lo_b == p_hi_b:
+        p_hi_b += 1
 
-    st.caption(f"Market snapshot across {total_models} tracked models · "
+    with st.container(border=True):
+        f1, f2, f3 = st.columns(3)
+        brand = f1.selectbox("BRAND", ["All brands"] + brand_opts, key="market_filter_brand")
+        region = f2.selectbox("REGION", ["All regions"] + region_opts, key="market_filter_region")
+        fuel = f3.selectbox("FUEL", ["All fuels"] + fuel_opts, key="market_filter_fuel")
+        f4, f5 = st.columns(2)
+        yr_lo, yr_hi = f4.slider("YEAR", yr_lo_b, yr_hi_b, (yr_lo_b, yr_hi_b), key="market_filter_year")
+        p_lo, p_hi = f5.slider("PRICE (€)", p_lo_b, p_hi_b, (p_lo_b, p_hi_b), step=100, key="market_filter_price")
+
+    stats_f, ads_f = stats.copy(), ads.copy()
+    if brand != "All brands":
+        stats_f = stats_f[stats_f["brand"] == brand]
+        ads_f = ads_f[ads_f["brand"] == brand]
+    if region != "All regions":
+        ads_f = ads_f[ads_f["region"] == region]
+    if fuel != "All fuels":
+        ads_f = ads_f[ads_f["fuel"] == fuel]
+    stats_f = stats_f[(stats_f["year_bucket"] + 1 >= yr_lo) & (stats_f["year_bucket"] <= yr_hi)]
+    ads_f = ads_f[ads_f["year"].isna() | ads_f["year"].between(yr_lo, yr_hi)]
+    stats_f = stats_f[stats_f["median_price"].between(p_lo, p_hi)]
+    ads_f = ads_f[ads_f["price"].isna() | ads_f["price"].between(p_lo, p_hi)]
+
+    display = stats_f.merge(liq, on=["brand", "model", "year_bucket"], how="left") if not liq.empty else stats_f.copy()
+    display = display.sort_values("n", ascending=False, na_position="last")
+
+    now_ts = datetime.now(timezone.utc)
+    if not ads_f.empty:
+        first_seen_dt = pd.to_datetime(ads_f["first_seen"], utc=True, errors="coerce")
+        last_seen_dt = pd.to_datetime(ads_f["last_seen"], utc=True, errors="coerce")
+        active_now = int(((now_ts - last_seen_dt).dt.days < ACTIVE_WINDOW_DAYS).sum())
+        new_week = int(((now_ts - first_seen_dt).dt.days < 7).sum())
+    else:
+        active_now, new_week = 0, 0
+    days_to_sell = display["median_days_to_sell"].dropna() if "median_days_to_sell" in display else pd.Series(dtype=float)
+
+    with st.container(border=True):
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("TRACKED ADS", len(ads_f))
+        k2.metric("ACTIVE NOW", active_now)
+        k3.metric("NEW THIS WEEK", new_week)
+        k4.metric("TRACKED MODELS", len(display))
+        k5.metric("AVG DAYS TO SELL", f"~{days_to_sell.mean():.0f}d" if not days_to_sell.empty else "—")
+
+    st.caption(f"Market snapshot across {len(display)} tracked models · "
                f"medians need ≥5 comparable ads in the last 90 days")
 
-    display = display.assign(
-        model_label=display["brand"] + " " + display["model"],
-        year_label=display["year_bucket"].astype(int).astype(str) + "–"
-                   + (display["year_bucket"].astype(int) + 1).astype(str),
-    )
-    st.dataframe(
-        display[["model_label", "year_label", "n", "median_price", "p25", "p75",
-                 "active_ads", "median_days_to_sell"]],
-        use_container_width=True, hide_index=True, height=700,
-        column_config={
-            "model_label": st.column_config.TextColumn("Model"),
-            "year_label": st.column_config.TextColumn("Year"),
-            "n": st.column_config.NumberColumn("N"),
-            "median_price": st.column_config.NumberColumn("Median", format="€%d"),
-            "p25": st.column_config.NumberColumn("P25", format="€%d"),
-            "p75": st.column_config.NumberColumn("P75", format="€%d"),
-            "active_ads": st.column_config.NumberColumn("Active"),
-            "median_days_to_sell": st.column_config.NumberColumn("Days to sell", format="%d d"),
-        },
-    )
-
-    st.write("")
-    st.markdown("**Median price by model**")
-    chart_source = display.head(40)
-    chart = chart_source.dropna(subset=["median_price"]).copy()
-    chart["name"] = (chart["brand"] + " " + chart["model"] + " · "
-                     + chart["year_bucket"].astype(int).astype(str) + "–"
-                     + (chart["year_bucket"].astype(int) + 1).astype(str))
-    chart = chart.sort_values("median_price", ascending=False)
-    max_median = chart["median_price"].max()
-    for _, c in chart.iterrows():
-        pct = c["median_price"] / max_median * 100 if max_median else 0
-        st.markdown(
-            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
-            f'<span style="width:220px;flex:none;font-size:12px;color:#5b5647;overflow:hidden;'
-            f'text-overflow:ellipsis;white-space:nowrap">{esc(c["name"])}</span>'
-            f'<div style="flex:1;height:16px;background:#e8dfca;border-radius:4px;overflow:hidden">'
-            f'<div style="height:100%;background:linear-gradient(90deg,#1c3d2e,#3f8659);width:{pct:.0f}%"></div></div>'
-            f'<span style="width:70px;flex:none;text-align:right;font:500 12px \'JetBrains Mono\',monospace">'
-            f'{money(c["median_price"])}</span></div>',
-            unsafe_allow_html=True,
+    if display.empty:
+        st.info("No models match these filters.")
+    else:
+        table = display.assign(
+            model_label=display["brand"] + " " + display["model"],
+            year_label=display["year_bucket"].astype(int).astype(str) + "–"
+                       + (display["year_bucket"].astype(int) + 1).astype(str),
+        )
+        st.dataframe(
+            table[["model_label", "year_label", "n", "median_price", "p25", "p75",
+                   "active_ads", "median_days_to_sell"]],
+            use_container_width=True, hide_index=True, height=700,
+            column_config={
+                "model_label": st.column_config.TextColumn("Model"),
+                "year_label": st.column_config.TextColumn("Year"),
+                "n": st.column_config.NumberColumn("N"),
+                "median_price": st.column_config.NumberColumn("Median", format="€%d"),
+                "p25": st.column_config.NumberColumn("P25", format="€%d"),
+                "p75": st.column_config.NumberColumn("P75", format="€%d"),
+                "active_ads": st.column_config.NumberColumn("Active"),
+                "median_days_to_sell": st.column_config.NumberColumn("Days to sell", format="%d d"),
+            },
         )
 
+        st.write("")
+        st.markdown("**Median price by model**")
+        chart = table.head(40).dropna(subset=["median_price"]).copy()
+        chart["name"] = (chart["brand"] + " " + chart["model"] + " · "
+                         + chart["year_bucket"].astype(int).astype(str) + "–"
+                         + (chart["year_bucket"].astype(int) + 1).astype(str))
+        chart = chart.sort_values("median_price", ascending=False)
+        render_bar_list(chart.to_dict("records"), lambda r: r["name"], lambda r: r["median_price"], money)
+
+        st.write("")
+        st.markdown("**Fastest-selling models** (shorter bar = quicker flip)")
+        liq_chart = table.dropna(subset=["median_days_to_sell"]).sort_values("median_days_to_sell").head(20).copy()
+        if liq_chart.empty:
+            st.caption("Not enough sold history yet to estimate days-to-sell.")
+        else:
+            liq_chart["name"] = (liq_chart["brand"] + " " + liq_chart["model"] + " · "
+                                 + liq_chart["year_bucket"].astype(int).astype(str) + "–"
+                                 + (liq_chart["year_bucket"].astype(int) + 1).astype(str))
+            render_bar_list(liq_chart.to_dict("records"), lambda r: r["name"], lambda r: r["median_days_to_sell"],
+                             lambda v: f"{v:.0f}d", color="linear-gradient(90deg,#8a6a2c,#c99a3f)")
+
     st.write("")
-    st.markdown("**Price vs. mileage**")
-    brand_opts = sorted(ads["brand"].dropna().unique()) if not ads.empty else []
+    st.markdown("**Regional & fuel breakdown**")
+    quality = ads_f[(ads_f["price"] > 100) & (~ads_f["is_blacklisted"].fillna(False))]
+    b1, b2 = st.columns(2)
+    with b1:
+        st.caption("Median price by region")
+        reg = quality.dropna(subset=["region"]).groupby("region")["price"].agg(["median", "count"]).reset_index()
+        reg = reg[reg["count"] >= 3].sort_values("median", ascending=False).head(15)
+        if reg.empty:
+            st.caption("Not enough priced ads with region data for this selection.")
+        else:
+            render_bar_list(reg.to_dict("records"), lambda r: f'{r["region"]} ({int(r["count"])})',
+                             lambda r: r["median"], money)
+    with b2:
+        st.caption("Median price by fuel")
+        fu = quality.dropna(subset=["fuel"]).groupby("fuel")["price"].agg(["median", "count"]).reset_index()
+        fu = fu[fu["count"] >= 3].sort_values("median", ascending=False).head(15)
+        if fu.empty:
+            st.caption("Not enough priced ads with fuel data for this selection.")
+        else:
+            render_bar_list(fu.to_dict("records"), lambda r: f'{r["fuel"]} ({int(r["count"])})',
+                             lambda r: r["median"], money, color="linear-gradient(90deg,#5b4630,#a4502f)")
+
+    st.write("")
+    st.markdown("**Model deep-dive**")
+    deep_opts = sorted(ads["brand"].dropna().unique()) if not ads.empty else []
     s1, s2 = st.columns(2)
-    sel_brand = s1.selectbox("Brand", brand_opts) if brand_opts else None
+    sel_brand = s1.selectbox("Brand", deep_opts, key="market_deep_brand") if deep_opts else None
+    pts = pd.DataFrame()
     if sel_brand:
         models = sorted(ads.loc[ads["brand"] == sel_brand, "model"].dropna().unique())
-        sel_model = s2.selectbox("Model", models) if models else None
+        sel_model = s2.selectbox("Model", models, key="market_deep_model") if models else None
         pts = ads[ads["brand"] == sel_brand]
         if sel_model:
             pts = pts[pts["model"] == sel_model]
-        pts = pts.dropna(subset=["price", "mileage"])
-        if pts.empty:
+
+    d1, d2 = st.columns(2)
+    with d1:
+        st.caption("Price vs. mileage")
+        scatter_pts = pts.dropna(subset=["price", "mileage"])
+        if scatter_pts.empty:
             st.caption("No ads with both price and mileage for this selection.")
         else:
-            st.scatter_chart(pts, x="mileage", y="price", color="#1c3d2e", x_label="km", y_label="€")
+            st.scatter_chart(scatter_pts, x="mileage", y="price", color="#1c3d2e", x_label="km", y_label="€")
+    with d2:
+        st.caption("Asking-price trend")
+        if pts.empty:
+            st.caption("Pick a brand above to see its price trend.")
+        else:
+            ph = load_price_history(tuple(sorted(pts["id"].dropna().astype(int).tolist())))
+            if ph.empty:
+                st.caption("No price history recorded yet for this selection.")
+            else:
+                ph = ph.copy()
+                ph["seen_at"] = pd.to_datetime(ph["seen_at"], utc=True).dt.tz_localize(None)
+                ph["week"] = ph["seen_at"].dt.to_period("W").dt.start_time
+                trend = ph.groupby("week")["price"].median().reset_index()
+                st.line_chart(trend, x="week", y="price", color="#1c3d2e", x_label="week", y_label="€ (median)")
 
 
 def render_ads_tab():
