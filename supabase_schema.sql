@@ -57,6 +57,29 @@ alter table deals add column if not exists n int;
 alter table deals add column if not exists confidence text;
 alter table deals add column if not exists fingerprint text;
 
+-- RLS: public read-only, backend (crawler/url_checker) read+write. The crawler's
+-- upsert path already worked before these existed (INSERT ... ON CONFLICT DO UPDATE
+-- coincidentally cleared the RLS bar some other way), but plain per-row UPDATEs
+-- (url_checker's status writes, deal pricing refreshes) were silently matching zero
+-- rows under RLS with no INSERT/UPDATE policy at all — PostgREST returned 200 OK
+-- either way, so the failure was invisible until traced through GH Actions logs.
+alter table ads enable row level security;
+alter table deals enable row level security;
+
+drop policy if exists "public read access" on ads;
+create policy "public read access" on ads for select to anon, authenticated using (true);
+drop policy if exists "backend insert access" on ads;
+create policy "backend insert access" on ads for insert to anon, authenticated with check (true);
+drop policy if exists "backend update access" on ads;
+create policy "backend update access" on ads for update to anon, authenticated using (true) with check (true);
+
+drop policy if exists "public read access" on deals;
+create policy "public read access" on deals for select to anon, authenticated using (true);
+drop policy if exists "backend insert access" on deals;
+create policy "backend insert access" on deals for insert to anon, authenticated with check (true);
+drop policy if exists "backend update access" on deals;
+create policy "backend update access" on deals for update to anon, authenticated using (true) with check (true);
+
 -- Every price seen for an ad: first sighting + one row per change.
 create table if not exists price_history (
   ad_id   bigint not null references ads(id),
@@ -148,23 +171,37 @@ where price is not null and price > 100
 group by 1, 2, 3, 4, 5
 having count(*) >= 5;
 
--- Liquidity per bucket: how many ads are live now, and how long ads that
--- disappeared (proxy for "sold") stayed listed. Active window = 8 days
--- (one weekly deep sweep + slack); must match deal engine / dashboard.
+-- Liquidity per bucket: how many ads are live now, and how long ads that sold
+-- stayed listed. "Sold" prefers the confirmed url_status check (its own page said
+-- sold/removed — url_checked_at is when we learned that, frozen at that point since
+-- url_checker never rechecks a terminal status) and falls back to the last_seen
+-- staleness proxy (gone 8+ days, one weekly deep sweep + slack) for ads url_checker
+-- hasn't gotten to yet. Must match deal engine / dashboard's ACTIVE_WINDOW_DAYS.
 create view market_liquidity as
+with dated as (
+  select
+    brand, model, (year / 2) * 2 as year_bucket,
+    olx_created_at,
+    last_seen,
+    case
+      when url_status in ('sold', 'removed') then url_checked_at
+      when last_seen <= now() - interval '8 days' then last_seen
+    end as sold_at
+  from ads
+  where brand is not null and model is not null and year is not null
+    and not is_blacklisted
+)
 select
   brand,
   model,
-  (year / 2) * 2 as year_bucket,
-  count(*) filter (where last_seen > now() - interval '8 days')::int as active_ads,
+  year_bucket,
+  count(*) filter (where sold_at is null and last_seen > now() - interval '8 days')::int
+    as active_ads,
   percentile_cont(0.5) within group (
-    order by extract(epoch from (last_seen - olx_created_at)) / 86400
-  ) filter (where last_seen <= now() - interval '8 days'
-            and olx_created_at is not null
-            and last_seen > olx_created_at) as median_days_to_sell
-from ads
-where brand is not null and model is not null and year is not null
-  and not is_blacklisted
+    order by extract(epoch from (sold_at - olx_created_at)) / 86400
+  ) filter (where sold_at is not null and olx_created_at is not null
+            and sold_at > olx_created_at) as median_days_to_sell
+from dated
 group by 1, 2, 3;
 
 -- Dashboard convenience view
@@ -174,8 +211,12 @@ select d.*,
        a.region, a.olx_created_at, a.photo_url, a.last_seen,
        a.url_status, a.url_checked_at,
        a.price as current_price,
-       case when a.last_seen > now() - interval '8 days'
-            then 'ativo' else 'desaparecido' end as status,
+       case
+         when a.url_status in ('sold', 'removed') then 'desaparecido'
+         when a.url_status = 'active' then 'ativo'
+         when a.last_seen > now() - interval '8 days' then 'ativo'
+         else 'desaparecido'
+       end as status,
        greatest(0, extract(epoch from (a.last_seen - a.olx_created_at)) / 86400)::int
          as days_listed,
        ph.previous_price,

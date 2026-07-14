@@ -19,10 +19,15 @@ MAX_MILEAGE = int(os.getenv("MAX_MILEAGE", 280000))
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", 378))
 DEEP_SWEEP = os.getenv("DEEP_SWEEP", "0") == "1"
 
-# How many stored ad URLs to re-check against their live OLX page per url_checker run,
-# and how far back (by first_seen) to bother checking at all.
-URL_CHECK_BATCH_SIZE = int(os.getenv("URL_CHECK_BATCH_SIZE", 300))
+# How many stored ad URLs to re-check against their live OLX page per url_checker run
+# (on top of the uncapped priority tier — see db.deal_ad_ids), how far back (by
+# first_seen) to bother checking at all, and how many checks to run concurrently.
+# Sized so a run of this batch, at this cadence (every 4h, see verify-urls.yml),
+# clears a multi-thousand-ad backlog within ~2 days — revisit both together if
+# ad volume grows a lot.
+URL_CHECK_BATCH_SIZE = int(os.getenv("URL_CHECK_BATCH_SIZE", 2000))
 URL_CHECK_LOOKBACK_DAYS = int(os.getenv("URL_CHECK_LOOKBACK_DAYS", 90))
+URL_CHECK_CONCURRENCY = int(os.getenv("URL_CHECK_CONCURRENCY", 6))
 
 # Resale friction: assume you sell at ~85% of median (haggling, fees, time)
 RESALE_FACTOR = 0.85

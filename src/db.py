@@ -94,17 +94,44 @@ def update_deal_pricing(rows: list[dict]):
          .eq("ad_id", r["ad_id"]).execute())
 
 
-def ads_to_check(limit: int, lookback_days: int) -> list[dict]:
+def deal_ad_ids() -> list[int]:
+    """Ad ids currently tracked as deals — what's actually shown on the dashboard,
+    so url_checker rechecks these every run regardless of backlog ordering."""
+    res = client().table("deals").select("ad_id").execute()
+    return [r["ad_id"] for r in res.data]
+
+
+def ads_to_check(limit: int, lookback_days: int, priority_ids: list[int] = ()) -> list[dict]:
     """Ads worth re-checking against their live OLX page: never checked, or last
-    checked while still 'active' (skip 'sold'/'removed' — terminal, no need to recheck).
-    Bounded to recently-seen ads and ordered so stalest-checked go first."""
+    checked while still 'active' (skip 'sold'/'removed' — terminal, no need to
+    recheck). priority_ids are always included (uncapped) on top of `limit`; the
+    rest is bounded to recently-seen ads and ordered so stalest-checked go first,
+    so nothing sits unchecked indefinitely once the backlog is caught up."""
     since = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    seen: set[int] = set()
+    out: list[dict] = []
+
+    priority_ids = list(priority_ids)
+    for i in range(0, len(priority_ids), 500):
+        res = (client().table("ads").select("id, url")
+               .in_("id", priority_ids[i:i + 500])
+               .or_("url_status.is.null,url_status.eq.active")
+               .execute())
+        for r in res.data:
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                out.append(r)
+
     res = (client().table("ads").select("id, url")
            .or_("url_status.is.null,url_status.eq.active")
            .gte("first_seen", since)
            .order("url_checked_at", nullsfirst=True)
            .limit(limit).execute())
-    return res.data
+    for r in res.data:
+        if r["id"] not in seen:
+            seen.add(r["id"])
+            out.append(r)
+    return out
 
 
 def update_url_status(rows: list[dict]):

@@ -3,6 +3,7 @@
 Uses OLX's public JSON API (the same one the website's frontend calls)
 instead of rendering pages with a browser. One request returns 40 ads.
 """
+import json
 import logging
 import re
 import time
@@ -22,6 +23,12 @@ HEADERS = {
 }
 LIMIT = 40          # max page size accepted by the API
 MAX_OFFSET = 1000   # OLX caps offset; use price buckets to go deeper
+
+# Shared connection pool — reused by every request this module makes (list
+# pages, category discovery, per-ad status checks) instead of a fresh
+# TCP+TLS handshake per call.
+_session = requests.Session()
+_session.headers.update(HEADERS)
 
 # OLX's "carros" category params never include a brand/marca field (only
 # "modelo") — brand has to be inferred from the free-text title instead.
@@ -52,7 +59,7 @@ def guess_brand(title: str) -> str | None:
 
 def _get(params: dict, retries: int = 3) -> dict:
     for attempt in range(retries):
-        r = requests.get(BASE, params=params, headers=HEADERS, timeout=30)
+        r = _session.get(BASE, params=params, timeout=30)
         if r.status_code == 200:
             return r.json()
         log.warning("OLX API %s (attempt %d)", r.status_code, attempt + 1)
@@ -64,7 +71,7 @@ def _get(params: dict, retries: int = 3) -> dict:
 def discover_category_id() -> int | None:
     """Find the Carros category id from the category page HTML."""
     try:
-        r = requests.get(CARROS_PAGE, headers={**HEADERS, "Accept": "text/html"}, timeout=30)
+        r = _session.get(CARROS_PAGE, headers={"Accept": "text/html"}, timeout=30)
         for pat in (r'"categoryId":\s*"?(\d+)', r'category_id[=:]"?(\d+)'):
             m = re.search(pat, r.text)
             if m:
@@ -74,31 +81,51 @@ def discover_category_id() -> int | None:
     return None
 
 
-# Best-effort PT-language markers for a dead listing — verify against real
-# sold/removed OLX ad pages during implementation and adjust before relying on them.
-# "já não está disponível" was dropped: it's baked into every ad page's chat-widget
-# i18n bundle ("Esta conversa já não está disponível" = the *chat*, not the ad, is
-# unavailable), so it matched 100% of pages regardless of the ad's real status.
-REMOVED_MARKERS = ["anúncio inativo", "anúncio removido"]
-SOLD_MARKERS = ["vendido", "já foi vendido"]
+# Every OLX ad page embeds a `window.__PRERENDERED_STATE__ = "<escaped JSON>"`
+# blob carrying the same ad object the frontend renders from, including a real
+# status/isActive field. This is the only signal check_offer_status() trusts.
+#
+# An earlier version of this function scraped localized page text instead
+# ("anúncio inativo"/"vendido" etc). Verified 2026-07-14 against real pages and
+# dropped entirely: OLX ships its *entire* i18n translation table on every page
+# load regardless of that ad's actual state, so phrases like "Anúncio inactivo"
+# and "já não está disponível" showed up even on a genuinely active ad's page
+# (as unrelated inactive-ad-template and chat-widget dictionary entries) — text
+# search there isn't "best-effort", it's actively wrong. HTTP 404/410 plus this
+# JSON blob are the only checks that held up against real active/removed pages.
+_STATE_RE = re.compile(r'window\.__PRERENDERED_STATE__\s*=\s*"(.*?)";\s*\n', re.S)
+
+
+def _ad_state(body: str) -> dict | None:
+    m = _STATE_RE.search(body)
+    if not m:
+        return None
+    try:
+        return json.loads(json.loads('"' + m.group(1) + '"')).get("ad", {}).get("ad")
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        return None
 
 
 def check_offer_status(url: str) -> str:
     """Fetch an ad's own page and classify it: 'active' | 'sold' | 'removed' | 'unknown'."""
     try:
-        r = requests.get(url, headers={**HEADERS, "Accept": "text/html"}, timeout=30)
+        r = _session.get(url, headers={"Accept": "text/html"}, timeout=30)
     except requests.RequestException:
         return "unknown"
     if r.status_code in (404, 410):
         return "removed"
     if r.status_code != 200:
         return "unknown"
-    body = r.text.lower()
-    if any(m in body for m in REMOVED_MARKERS):
-        return "removed"
-    if any(m in body for m in SOLD_MARKERS):
-        return "sold"
-    return "active"
+
+    ad = _ad_state(r.text)
+    if ad is None:
+        return "unknown"
+    status = (ad.get("status") or "").lower()
+    if status == "active" and ad.get("isActive"):
+        return "active"
+    if status:
+        return "sold" if ("sold" in status or "vendid" in status) else "removed"
+    return "removed" if ad.get("isActive") is False else "unknown"
 
 
 def _first_photo(o: dict) -> str | None:
