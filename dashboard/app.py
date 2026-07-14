@@ -261,17 +261,20 @@ def render_deals_tab():
 
     with st.container(border=True):
         f1, f2, f3 = st.columns(3)
-        min_profit, max_profit = f1.slider("PROFIT (€)", profit_lo, profit_hi, (profit_lo, profit_hi), step=10)
-        min_km, max_km = f2.slider("MILEAGE (KM)", km_lo, km_hi, (km_lo, km_hi), step=1000)
-        min_year, max_year = f3.slider("YEAR", year_lo, year_hi, (year_lo, year_hi))
+        min_profit, max_profit = f1.slider("PROFIT (€)", profit_lo, profit_hi, (profit_lo, profit_hi),
+                                            step=10, key="deals_filter_profit")
+        min_km, max_km = f2.slider("MILEAGE (KM)", km_lo, km_hi, (km_lo, km_hi),
+                                    step=1000, key="deals_filter_km")
+        min_year, max_year = f3.slider("YEAR", year_lo, year_hi, (year_lo, year_hi), key="deals_filter_year")
         f4, f5, f6, f7 = st.columns(4)
         brand_opts = sorted(deals["brand"].dropna().unique())
-        brand = f4.selectbox("BRAND", ["All brands"] + brand_opts)
+        brand = f4.selectbox("BRAND", ["All brands"] + brand_opts, key="deals_filter_brand")
         region_opts = sorted(deals["region"].dropna().unique())
-        region = f5.selectbox("REGION", ["All regions"] + region_opts)
+        region = f5.selectbox("REGION", ["All regions"] + region_opts, key="deals_filter_region")
         conf = f6.selectbox("TRUST", ["All levels", "alta", "media", "baixa"],
-                             format_func=lambda c: c if c == "All levels" else CONF_META[c][0])
-        only_active = f7.checkbox("Active listings only", value=True)
+                             format_func=lambda c: c if c == "All levels" else CONF_META[c][0],
+                             key="deals_filter_trust")
+        only_active = f7.checkbox("Active listings only", value=True, key="deals_filter_active")
 
     view = deals[~deals["ad_id"].isin(st.session_state.skipped_ids)]
     view = view[(view["est_profit"] >= min_profit) & (view["est_profit"] <= max_profit)]
@@ -380,18 +383,7 @@ def render_market_tab():
         return
 
     display = stats.merge(liq, on=["brand", "model", "year_bucket"], how="left") if not liq.empty else stats.copy()
-
-    sort_options = {
-        "Sample size (N)": "n",
-        "Median price": "median_price",
-        "Active listings": "active_ads",
-        "Days to sell": "median_days_to_sell",
-        "Model": ["brand", "model"],
-    }
-    sc1, sc2 = st.columns([3, 1])
-    sort_label = sc1.selectbox("SORT BY", list(sort_options.keys()))
-    descending = sc2.checkbox("Descending", value=True)
-    display = display.sort_values(sort_options[sort_label], ascending=not descending, na_position="last")
+    display = display.sort_values("n", ascending=False, na_position="last")
     total_models = len(display)
 
     st.caption(f"Market snapshot across {total_models} tracked models · "
