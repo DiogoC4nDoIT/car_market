@@ -76,7 +76,10 @@ def discover_category_id() -> int | None:
 
 # Best-effort PT-language markers for a dead listing — verify against real
 # sold/removed OLX ad pages during implementation and adjust before relying on them.
-REMOVED_MARKERS = ["já não está disponível", "anúncio inativo", "anúncio removido"]
+# "já não está disponível" was dropped: it's baked into every ad page's chat-widget
+# i18n bundle ("Esta conversa já não está disponível" = the *chat*, not the ad, is
+# unavailable), so it matched 100% of pages regardless of the ad's real status.
+REMOVED_MARKERS = ["anúncio inativo", "anúncio removido"]
 SOLD_MARKERS = ["vendido", "já foi vendido"]
 
 

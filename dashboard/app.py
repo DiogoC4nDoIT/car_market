@@ -129,6 +129,30 @@ def count_rows(table):
     return sb().table(table).select("id", count="exact").limit(1).execute().count
 
 
+@st.cache_data(ttl=120)
+def count_ads(brand=None, region=None, fuel=None, yr_lo=None, yr_hi=None,
+               p_lo=None, p_hi=None, min_last_seen=None, min_first_seen=None):
+    """Exact server-side count matching the Market tab filters — the `ads` df loaded via
+    `load()` is capped (currently 5000 of 13k+ rows) for the charts/deep-dive below, so KPI
+    cards must count against the real table instead or they'd plateau at the cap."""
+    q = sb().table("ads").select("id", count="exact")
+    if brand and brand != "All brands":
+        q = q.eq("brand", brand)
+    if region and region != "All regions":
+        q = q.eq("region", region)
+    if fuel and fuel != "All fuels":
+        q = q.eq("fuel", fuel)
+    if yr_lo is not None:
+        q = q.gte("year", yr_lo).lte("year", yr_hi)
+    if p_lo is not None:
+        q = q.gte("price", p_lo).lte("price", p_hi)
+    if min_last_seen is not None:
+        q = q.gte("last_seen", min_last_seen)
+    if min_first_seen is not None:
+        q = q.gte("first_seen", min_first_seen)
+    return q.limit(1).execute().count
+
+
 def set_flag(ad_id: int, flag: str):
     sb().table("ad_flags").upsert({"ad_id": int(ad_id), "flag": flag}).execute()
     st.cache_data.clear()
@@ -168,9 +192,10 @@ def fine_key(brand, model, year_bucket, fuel, mileage):
 
 @st.cache_data(ttl=120)
 def load_comps(brand, model, year_lo, year_hi, fuel=None, mileage_lo=None, mileage_hi=None):
-    """Fetch comps directly from Supabase (uncapped), unlike the 5000-row `ads` df, and —
-    when a fuel/mileage band is given — matching the same fine basis deal_engine.evaluate()
-    used to pick this deal's median (see fine_key() above)."""
+    """Fetch comps directly from Supabase (uncapped), unlike the 5000-row `ads` df. `fuel`
+    is always enforced when known (different fuel types price differently); mileage band is
+    only passed when it matches the fine basis deal_engine.evaluate() used for this deal's
+    stored median (see fine_key() above)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     q = (sb().table("ads").select("*")
          .eq("brand", brand).eq("model", model)
@@ -286,6 +311,7 @@ ads = load("ads", order="first_seen", limit=5000)
 runs = load("crawl_runs", order="started_at", limit=1)
 stats = load("market_stats")
 fine_stats = load("market_stats_fine")
+fuel_stats = load("market_stats_fuel")
 liq = load("market_liquidity")
 flags = load("ad_flags")
 
@@ -567,7 +593,14 @@ def render_market_tab():
         yr_lo, yr_hi = f4.slider("YEAR", yr_lo_b, yr_hi_b, (yr_lo_b, yr_hi_b), key="market_filter_year")
         p_lo, p_hi = f5.slider("PRICE (€)", p_lo_b, p_hi_b, (p_lo_b, p_hi_b), step=100, key="market_filter_price")
 
-    stats_f, ads_f = stats.copy(), ads.copy()
+    # A fuel filter switches the model table/charts to the fuel-specific view too —
+    # otherwise picking "Diesel" only affects the breakdown charts below while the
+    # main model list/medians stay a fuel-blind blend (the exact bug this whole
+    # fuel-matching pass exists to fix, just at the aggregate level instead of a
+    # single deal's comps).
+    stats_f = (fuel_stats[fuel_stats["fuel"] == fuel].drop(columns="fuel").copy()
+               if fuel != "All fuels" and not fuel_stats.empty else stats.copy())
+    ads_f = ads.copy()
     if brand != "All brands":
         stats_f = stats_f[stats_f["brand"] == brand]
         ads_f = ads_f[ads_f["brand"] == brand]
@@ -584,18 +617,17 @@ def render_market_tab():
     display = display.sort_values("n", ascending=False, na_position="last")
 
     now_ts = datetime.now(timezone.utc)
-    if not ads_f.empty:
-        first_seen_dt = pd.to_datetime(ads_f["first_seen"], utc=True, errors="coerce")
-        last_seen_dt = pd.to_datetime(ads_f["last_seen"], utc=True, errors="coerce")
-        active_now = int(((now_ts - last_seen_dt).dt.days < ACTIVE_WINDOW_DAYS).sum())
-        new_week = int(((now_ts - first_seen_dt).dt.days < 7).sum())
-    else:
-        active_now, new_week = 0, 0
+    active_cutoff = (now_ts - timedelta(days=ACTIVE_WINDOW_DAYS)).isoformat()
+    week_cutoff = (now_ts - timedelta(days=7)).isoformat()
+    count_kwargs = dict(brand=brand, region=region, fuel=fuel, yr_lo=yr_lo, yr_hi=yr_hi, p_lo=p_lo, p_hi=p_hi)
+    tracked_ads = count_ads(**count_kwargs)
+    active_now = count_ads(**count_kwargs, min_last_seen=active_cutoff)
+    new_week = count_ads(**count_kwargs, min_first_seen=week_cutoff)
     days_to_sell = display["median_days_to_sell"].dropna() if "median_days_to_sell" in display else pd.Series(dtype=float)
 
     with st.container(border=True):
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("TRACKED ADS", len(ads_f))
+        k1.metric("TRACKED ADS", tracked_ads)
         k2.metric("ACTIVE NOW", active_now)
         k3.metric("NEW THIS WEEK", new_week)
         k4.metric("TRACKED MODELS", len(display))
@@ -603,6 +635,9 @@ def render_market_tab():
 
     st.caption(f"Market snapshot across {len(display)} tracked models · "
                f"medians need ≥5 comparable ads in the last 90 days")
+    if tracked_ads > len(ads):
+        st.caption(f"Regional/fuel breakdown and deep-dive below are based on a sample "
+                   f"of the {len(ads):,} most recently added ads, not all {tracked_ads:,}.")
 
     if display.empty:
         st.info("No models match these filters.")
@@ -878,12 +913,15 @@ def render_detail(ad_id):
     st.markdown("**Similar Ads**")
     bucket = int(d["year_bucket"])
     fuel, mileage = d.get("fuel"), d.get("mileage")
+    has_fuel = pd.notna(fuel)
     fine_basis = False
     mileage_lo = mileage_hi = None
-    if pd.notna(fuel) and pd.notna(mileage):
+    if has_fuel and pd.notna(mileage):
         # Mirrors evaluate()'s preference order (src/deal_engine.py) — if a fine
         # (fuel + mileage-band) match exists, that's the basis the stored median/n
-        # used, so comps must match it too, not just brand/model/year_bucket.
+        # used, so mileage-banded comps should match it too. Fuel itself is always
+        # enforced below regardless of this match — different fuel types have
+        # structurally different prices and are never "comparable".
         key = fine_key(d["brand"], d["model"], bucket, fuel, mileage)
         match = fine_stats[
             (fine_stats["brand"].str.lower() == key[0]) & (fine_stats["model"].str.lower() == key[1])
@@ -897,7 +935,7 @@ def render_detail(ad_id):
             mileage_hi = KM_BANDS[0] if band_lo == 0 else (KM_BANDS[1] if band_lo == KM_BANDS[0] else None)
     comps = load_comps(
         d["brand"], d["model"], bucket, bucket + 1,
-        fuel=fuel if fine_basis else None,
+        fuel=fuel if has_fuel else None,
         mileage_lo=mileage_lo, mileage_hi=mileage_hi,
     ).dropna(subset=["price"])
     if ad_id not in comps["id"].values:
@@ -917,7 +955,7 @@ def render_detail(ad_id):
         self_rows = comps[comps["id"] == ad_id]
         self_rank = int(self_rows["rank"].iloc[0]) if not self_rows.empty else None
         if self_rank:
-            basis_note = f", {esc(fuel)}" if fine_basis else ""
+            basis_note = f", {esc(fuel)}" if has_fuel else ""
             st.caption(f"This ad ranks #{self_rank} cheapest of {len(comps)} comparable listings "
                        f"({d['brand']} {d['model']}, {bucket}–{bucket + 1}{basis_note})")
         for _, cm in comps.iterrows():

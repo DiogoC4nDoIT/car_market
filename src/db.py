@@ -52,6 +52,10 @@ def market_stats_fine() -> list[dict]:
     return read_view("market_stats_fine")
 
 
+def market_stats_fuel() -> list[dict]:
+    return read_view("market_stats_fuel")
+
+
 def insert_price_history(rows: list[dict]):
     for i in range(0, len(rows), 500):
         client().table("price_history").insert(rows[i:i + 500]).execute()
@@ -78,6 +82,16 @@ def insert_deals(deals: list[dict]):
 
 def mark_notified(ad_id: int):
     client().table("deals").update({"notified": True}).eq("ad_id", ad_id).execute()
+
+
+def update_deal_pricing(rows: list[dict]):
+    """Plain per-row UPDATE of recomputed pricing fields only — leaves
+    notified/created_at/fingerprint untouched, unlike insert_deals()'s upsert."""
+    fields = ("median_price", "discount", "est_profit", "n", "confidence", "score")
+    for r in rows:
+        (client().table("deals")
+         .update({f: r[f] for f in fields})
+         .eq("ad_id", r["ad_id"]).execute())
 
 
 def ads_to_check(limit: int, lookback_days: int) -> list[dict]:

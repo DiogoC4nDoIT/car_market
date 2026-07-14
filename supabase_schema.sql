@@ -78,6 +78,7 @@ create table if not exists crawl_runs (
 -- Views are dropped first: create-or-replace can't reorder/insert columns.
 drop view if exists deals_view;
 drop view if exists market_stats;
+drop view if exists market_stats_fuel;
 drop view if exists market_stats_fine;
 drop view if exists market_liquidity;
 
@@ -99,6 +100,28 @@ where price is not null and price > 100
   and not is_blacklisted
   and last_seen > now() - interval '90 days'
 group by 1, 2, 3
+having count(*) >= 5;
+
+-- Middle tier: same bucket + fuel (no mileage band). Used when the fuel+mileage
+-- ("fine") bucket doesn't have enough comps, so we don't fall all the way back to
+-- a fuel-blind coarse median. Must stay identical to deal_engine.fuel_key().
+create view market_stats_fuel as
+select
+  brand,
+  model,
+  (year / 2) * 2 as year_bucket,
+  fuel,
+  count(*)::int as n,
+  percentile_cont(0.5)  within group (order by price) as median_price,
+  percentile_cont(0.25) within group (order by price) as p25,
+  percentile_cont(0.75) within group (order by price) as p75
+from ads
+where price is not null and price > 100
+  and brand is not null and model is not null and year is not null
+  and fuel is not null
+  and not is_blacklisted
+  and last_seen > now() - interval '90 days'
+group by 1, 2, 3, 4
 having count(*) >= 5;
 
 -- Finer comps: same bucket + fuel + mileage band. Band edges (150k/250k)

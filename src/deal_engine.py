@@ -23,6 +23,10 @@ def fine_key(brand, model, year, fuel, mileage):
     return (*stats_key(brand, model, year), str(fuel).lower(), km_band(int(mileage)))
 
 
+def fuel_key(brand, model, year, fuel):
+    return (*stats_key(brand, model, year), str(fuel).lower())
+
+
 def build_stats_index(rows: list[dict]) -> dict:
     """rows from the market_stats view -> lookup dict."""
     return {
@@ -36,6 +40,14 @@ def build_fine_index(rows: list[dict]) -> dict:
     return {
         (*stats_key(r["brand"], r["model"], r["year_bucket"]),
          str(r["fuel"]).lower(), int(r["km_band"])): r
+        for r in rows
+    }
+
+
+def build_fuel_index(rows: list[dict]) -> dict:
+    """rows from the market_stats_fuel view -> lookup dict."""
+    return {
+        (*stats_key(r["brand"], r["model"], r["year_bucket"]), str(r["fuel"]).lower()): r
         for r in rows
     }
 
@@ -58,7 +70,46 @@ def fingerprint(ad: dict) -> str:
                     for k in ("brand", "model", "year", "mileage", "price"))
 
 
-def evaluate(ad: dict, stats: dict, fine_stats: dict | None = None) -> dict | None:
+def pick_stat(ad: dict, stats: dict, fine_stats: dict | None = None,
+              fuel_stats: dict | None = None) -> tuple[dict | None, bool]:
+    """Pick the most specific comparable-ads bucket for `ad`, trying:
+    fuel + mileage band -> fuel only -> coarse (fuel-blind), in that order.
+    Returns (stat, capped) where `capped` means the match isn't fuel+mileage
+    specific, so confidence should not be reported as "alta"."""
+    if fine_stats and ad.get("fuel") and ad.get("mileage"):
+        stat = fine_stats.get(fine_key(ad["brand"], ad["model"], ad["year"],
+                                       ad["fuel"], ad["mileage"]))
+        if stat is not None:
+            return stat, False
+    if fuel_stats and ad.get("fuel"):
+        stat = fuel_stats.get(fuel_key(ad["brand"], ad["model"], ad["year"], ad["fuel"]))
+        if stat is not None:
+            return stat, True
+    return stats.get(stats_key(ad["brand"], ad["model"], ad["year"])), True
+
+
+def score_ad(ad: dict, stat: dict, capped: bool) -> dict:
+    """Pricing math for `ad` against the chosen comparable-ads `stat` bucket."""
+    price = ad["price"]
+    median = float(stat["median_price"])
+    discount = 1 - price / median
+    est_profit = median * config.RESALE_FACTOR - price
+    conf = confidence(stat)
+    if capped and conf == "alta":
+        conf = "media"
+    return {
+        "median_price": round(median, 2),
+        "discount": round(discount, 4),
+        "est_profit": round(est_profit, 2),
+        # profit-weighted score, scaled by sample confidence
+        "score": round(est_profit * discount * min(stat["n"], 20) / 20, 2),
+        "n": int(stat["n"]),
+        "confidence": conf,
+    }
+
+
+def evaluate(ad: dict, stats: dict, fine_stats: dict | None = None,
+             fuel_stats: dict | None = None) -> dict | None:
     """Return a deals row if this ad is a flip candidate, else None."""
     price = ad.get("price")
     if not price or price < 100 or price > config.BUDGET:
@@ -70,37 +121,17 @@ def evaluate(ad: dict, stats: dict, fine_stats: dict | None = None) -> dict | No
     if not (ad.get("brand") and ad.get("model") and ad.get("year")):
         return None
 
-    # Prefer comps matching fuel + mileage band; fall back to the coarse
-    # bucket, which pools incomparable cars, so cap its confidence.
-    stat, capped = None, False
-    if fine_stats and ad.get("fuel") and ad.get("mileage"):
-        stat = fine_stats.get(fine_key(ad["brand"], ad["model"], ad["year"],
-                                       ad["fuel"], ad["mileage"]))
-    if stat is None:
-        stat = stats.get(stats_key(ad["brand"], ad["model"], ad["year"]))
-        capped = True
+    stat, capped = pick_stat(ad, stats, fine_stats, fuel_stats)
     if not stat:
         return None
 
-    median = float(stat["median_price"])
-    discount = 1 - price / median
-    est_profit = median * config.RESALE_FACTOR - price
-    if discount < config.MIN_DISCOUNT or est_profit < config.MIN_PROFIT:
+    priced = score_ad(ad, stat, capped)
+    if priced["discount"] < config.MIN_DISCOUNT or priced["est_profit"] < config.MIN_PROFIT:
         return None
-
-    conf = confidence(stat)
-    if capped and conf == "alta":
-        conf = "media"
 
     return {
         "ad_id": ad["id"],
         "price": price,
-        "median_price": round(median, 2),
-        "discount": round(discount, 4),
-        "est_profit": round(est_profit, 2),
-        # profit-weighted score, scaled by sample confidence
-        "score": round(est_profit * discount * min(stat["n"], 20) / 20, 2),
-        "n": int(stat["n"]),
-        "confidence": conf,
+        **priced,
         "fingerprint": fingerprint(ad),
     }

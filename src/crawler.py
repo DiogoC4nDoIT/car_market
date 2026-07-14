@@ -78,9 +78,10 @@ def run():
 
     stats = deal_engine.build_stats_index(db.market_stats())
     fine = deal_engine.build_fine_index(db.market_stats_fine())
-    log.info("market stats groups: %d coarse, %d fine", len(stats), len(fine))
+    fuel = deal_engine.build_fuel_index(db.market_stats_fuel())
+    log.info("market stats groups: %d coarse, %d fuel, %d fine", len(stats), len(fuel), len(fine))
 
-    candidates = [d for d in (deal_engine.evaluate(a, stats, fine) for a in ads) if d]
+    candidates = [d for d in (deal_engine.evaluate(a, stats, fine, fuel) for a in ads) if d]
     already = db.existing_deal_ids([d["ad_id"] for d in candidates])
     relisted = db.recent_deal_fingerprints(config.RELIST_DEDUPE_DAYS)
     new_deals, seen_fps = [], set()
