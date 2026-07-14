@@ -21,13 +21,16 @@ DEEP_SWEEP = os.getenv("DEEP_SWEEP", "0") == "1"
 
 # How many stored ad URLs to re-check against their live OLX page per url_checker run
 # (on top of the uncapped priority tier — see db.deal_ad_ids), how far back (by
-# first_seen) to bother checking at all, and how many checks to run concurrently.
-# Sized so a run of this batch, at this cadence (every 4h, see verify-urls.yml),
-# clears a multi-thousand-ad backlog within ~2 days — revisit both together if
-# ad volume grows a lot.
-URL_CHECK_BATCH_SIZE = int(os.getenv("URL_CHECK_BATCH_SIZE", 2000))
+# first_seen) to bother checking at all, and how fast to check them. OLX rate-limits
+# individual ad-page fetches (confirmed 2026-07-14: 6 workers with no pacing got
+# 403'd on ~85% of requests after the first few hundred); CONCURRENCY + DELAY_SECONDS
+# together cap the aggregate request rate — keep them conservative, verify against
+# real runs before pushing faster. At ~2 req/s this batch clears a multi-thousand-ad
+# backlog within ~2 days at this cadence (every 4h, see verify-urls.yml).
+URL_CHECK_BATCH_SIZE = int(os.getenv("URL_CHECK_BATCH_SIZE", 1500))
 URL_CHECK_LOOKBACK_DAYS = int(os.getenv("URL_CHECK_LOOKBACK_DAYS", 90))
-URL_CHECK_CONCURRENCY = int(os.getenv("URL_CHECK_CONCURRENCY", 6))
+URL_CHECK_CONCURRENCY = int(os.getenv("URL_CHECK_CONCURRENCY", 2))
+URL_CHECK_DELAY_SECONDS = float(os.getenv("URL_CHECK_DELAY_SECONDS", 0.5))
 
 # Resale friction: assume you sell at ~85% of median (haggling, fees, time)
 RESALE_FACTOR = 0.85
