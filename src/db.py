@@ -16,10 +16,11 @@ def client():
 
 def known_prices(ids: list[int]) -> dict[int, float | None]:
     """Currently stored price per known ad id (missing id = never seen)."""
-    if not ids:
-        return {}
-    res = client().table("ads").select("id, price").in_("id", ids).execute()
-    return {r["id"]: r["price"] for r in res.data}
+    out = {}
+    for i in range(0, len(ids), 500):
+        res = client().table("ads").select("id, price").in_("id", ids[i:i + 500]).execute()
+        out.update({r["id"]: r["price"] for r in res.data})
+    return out
 
 
 def upsert_ads(ads: list[dict]):
