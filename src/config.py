@@ -19,6 +19,11 @@ MAX_MILEAGE = int(os.getenv("MAX_MILEAGE", 280000))
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", 378))
 DEEP_SWEEP = os.getenv("DEEP_SWEEP", "0") == "1"
 
+# How many stored ad URLs to re-check against their live OLX page per url_checker run,
+# and how far back (by first_seen) to bother checking at all.
+URL_CHECK_BATCH_SIZE = int(os.getenv("URL_CHECK_BATCH_SIZE", 300))
+URL_CHECK_LOOKBACK_DAYS = int(os.getenv("URL_CHECK_LOOKBACK_DAYS", 90))
+
 # Resale friction: assume you sell at ~85% of median (haggling, fees, time)
 RESALE_FACTOR = 0.85
 

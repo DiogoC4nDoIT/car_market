@@ -22,6 +22,8 @@ create table if not exists ads (
 );
 
 alter table ads add column if not exists photo_url text;
+alter table ads add column if not exists url_status text;        -- 'active' | 'sold' | 'removed' | null (unchecked)
+alter table ads add column if not exists url_checked_at timestamptz;
 
 create index if not exists ads_market_idx on ads (brand, model, year);
 create index if not exists ads_price_idx  on ads (price);
@@ -136,6 +138,7 @@ create view deals_view as
 select d.*,
        a.title, a.url, a.brand, a.model, a.year, a.mileage, a.fuel,
        a.region, a.olx_created_at, a.photo_url, a.last_seen,
+       a.url_status, a.url_checked_at,
        a.price as current_price,
        case when a.last_seen > now() - interval '8 days'
             then 'ativo' else 'desaparecido' end as status,
