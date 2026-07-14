@@ -112,6 +112,30 @@ def minutes_since(ts: str) -> float:
     return (datetime.now(timezone.utc) - dt).total_seconds() / 60
 
 
+ACTIVE_WINDOW_DAYS = 8  # mirrors src/config.py:ACTIVE_WINDOW_DAYS; dashboard is
+                        # intentionally standalone from the crawler process (CLAUDE.md)
+
+
+def comp_sold_info(last_seen, olx_created_at, url_status=None):
+    """Whether a comp looks sold, and days-to-sell if computable. Prefers the
+    direct url_status check (src/url_checker.py); falls back to the same 8-day
+    last_seen inference market_liquidity uses when a comp hasn't been checked yet."""
+    if url_status == "active":
+        sold = False
+    elif url_status in ("sold", "removed"):
+        sold = True
+    elif pd.isna(last_seen):
+        return False, None
+    else:
+        ls = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+        sold = (datetime.now(timezone.utc) - ls).days >= ACTIVE_WINDOW_DAYS
+    if not sold or pd.isna(last_seen) or pd.isna(olx_created_at):
+        return sold, None
+    ls = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+    created = datetime.fromisoformat(str(olx_created_at).replace("Z", "+00:00"))
+    return True, ((ls - created).total_seconds() / 86400 if ls > created else None)
+
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -369,35 +393,35 @@ def render_market_tab():
     descending = sc2.checkbox("Descending", value=True)
     display = display.sort_values(sort_options[sort_label], ascending=not descending, na_position="last")
     total_models = len(display)
-    display = display.head(40)
 
-    st.caption(f"Market snapshot across {total_models} tracked models (showing top {len(display)} by {sort_label.lower()}) · "
+    st.caption(f"Market snapshot across {total_models} tracked models · "
                f"medians need ≥5 comparable ads in the last 90 days")
 
-    with st.container(border=True):
-        h = st.columns([2, 1, 0.7, 1, 1.3, 1, 1.2])
-        for col, label in zip(h, ["MODEL", "YEAR BUCKET", "N", "MEDIAN", "RANGE (P25–P75)", "ACTIVE", "DAYS TO SELL"]):
-            col.markdown(f'<span class="stand-label">{label}</span>', unsafe_allow_html=True)
-        for _, m in display.iterrows():
-            bucket = int(m["year_bucket"])
-            row = st.columns([2, 1, 0.7, 1, 1.3, 1, 1.2])
-            row[0].markdown(f'<span class="stand-row-title">{esc(m["brand"])} {esc(m["model"])}</span>',
-                             unsafe_allow_html=True)
-            row[1].markdown(f'<span class="stand-mono">{bucket}–{bucket + 1}</span>', unsafe_allow_html=True)
-            row[2].markdown(f'<span class="stand-mono">{int(m["n"])}</span>', unsafe_allow_html=True)
-            row[3].markdown(f'<span class="stand-mono">{money(m["median_price"])}</span>', unsafe_allow_html=True)
-            row[4].markdown(f'<span class="stand-mono">{money(m["p25"])} – {money(m["p75"])}</span>',
-                             unsafe_allow_html=True)
-            active = m.get("active_ads")
-            row[5].markdown(f'<span class="stand-mono">{int(active) if pd.notna(active) else "—"}</span>',
-                             unsafe_allow_html=True)
-            sell = m.get("median_days_to_sell")
-            row[6].markdown(f'<span class="stand-mono">{f"~{int(sell)}d" if pd.notna(sell) else "—"}</span>',
-                             unsafe_allow_html=True)
+    display = display.assign(
+        model_label=display["brand"] + " " + display["model"],
+        year_label=display["year_bucket"].astype(int).astype(str) + "–"
+                   + (display["year_bucket"].astype(int) + 1).astype(str),
+    )
+    st.dataframe(
+        display[["model_label", "year_label", "n", "median_price", "p25", "p75",
+                 "active_ads", "median_days_to_sell"]],
+        use_container_width=True, hide_index=True, height=700,
+        column_config={
+            "model_label": st.column_config.TextColumn("Model"),
+            "year_label": st.column_config.TextColumn("Year"),
+            "n": st.column_config.NumberColumn("N"),
+            "median_price": st.column_config.NumberColumn("Median", format="€%d"),
+            "p25": st.column_config.NumberColumn("P25", format="€%d"),
+            "p75": st.column_config.NumberColumn("P75", format="€%d"),
+            "active_ads": st.column_config.NumberColumn("Active"),
+            "median_days_to_sell": st.column_config.NumberColumn("Days to sell", format="%d d"),
+        },
+    )
 
     st.write("")
     st.markdown("**Median price by model**")
-    chart = display.dropna(subset=["median_price"]).copy()
+    chart_source = display.head(40)
+    chart = chart_source.dropna(subset=["median_price"]).copy()
     chart["name"] = (chart["brand"] + " " + chart["model"] + " · "
                      + chart["year_bucket"].astype(int).astype(str) + "–"
                      + (chart["year_bucket"].astype(int) + 1).astype(str))
@@ -598,6 +622,8 @@ def render_detail(ad_id):
         comps = pd.concat([comps, pd.DataFrame([{
             "id": ad_id, "price": d["price"], "mileage": d.get("mileage"), "year": d.get("year"),
             "region": d.get("region"), "fuel": d.get("fuel"), "url": d["url"],
+            "last_seen": d.get("last_seen"), "olx_created_at": d.get("olx_created_at"),
+            "url_status": d.get("url_status"),
         }])], ignore_index=True)
     comps = comps.sort_values("price").reset_index(drop=True)
     if comps.empty:
@@ -619,6 +645,10 @@ def render_detail(ad_id):
                 delta_html = f'<span style="font:500 12px \'JetBrains Mono\',monospace;color:{delta_color}">{delta_text}</span>'
             self_html = ('<span class="stand-badge" style="background:#1c3d2e;color:#e8c07a">THIS AD</span>'
                          if is_self else "")
+            sold, days_to_sell = comp_sold_info(cm.get("last_seen"), cm.get("olx_created_at"), cm.get("url_status"))
+            sold_text = f"SOLD · ~{int(days_to_sell)}d" if sold and days_to_sell is not None else "SOLD"
+            sold_html = (f'<span class="stand-badge" style="background:#5c2b28;color:#e8b3a8">{sold_text}</span>'
+                         if sold else "")
             row_bg = "#f2ecdc" if is_self else "#faf7ef"
             row_border = "#c99a3f" if is_self else "#e9e1cd"
             rank_color = "#c99a3f" if is_self else "#a09a84"
@@ -635,7 +665,7 @@ def render_detail(ad_id):
                 f'{money(cm["price"])}</span>'
                 f'<span style="font-size:12px;color:#6a6454">{km_val} km · {year_val} · '
                 f'{esc(cm.get("region") or "?")}{fuel_bit}</span>'
-                f'<span style="flex:1"></span>{self_html}{delta_html}'
+                f'<span style="flex:1"></span>{sold_html}{self_html}{delta_html}'
                 f'<span style="font-size:11px;color:#1c3d2e;text-decoration:underline">View ad ↗</span>'
                 f'</a>',
                 unsafe_allow_html=True,

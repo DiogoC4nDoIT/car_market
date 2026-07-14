@@ -80,6 +80,24 @@ def mark_notified(ad_id: int):
     client().table("deals").update({"notified": True}).eq("ad_id", ad_id).execute()
 
 
+def ads_to_check(limit: int, lookback_days: int) -> list[dict]:
+    """Ads worth re-checking against their live OLX page: never checked, or last
+    checked while still 'active' (skip 'sold'/'removed' — terminal, no need to recheck).
+    Bounded to recently-seen ads and ordered so stalest-checked go first."""
+    since = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    res = (client().table("ads").select("id, url")
+           .or_("url_status.is.null,url_status.eq.active")
+           .gte("first_seen", since)
+           .order("url_checked_at", nullsfirst=True)
+           .limit(limit).execute())
+    return res.data
+
+
+def update_url_status(rows: list[dict]):
+    for i in range(0, len(rows), 500):
+        client().table("ads").upsert(rows[i:i + 500]).execute()
+
+
 def start_crawl_run(mode: str) -> int | None:
     res = client().table("crawl_runs").insert({"mode": mode}).execute()
     return res.data[0]["id"] if res.data else None

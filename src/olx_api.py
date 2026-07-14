@@ -74,6 +74,30 @@ def discover_category_id() -> int | None:
     return None
 
 
+# Best-effort PT-language markers for a dead listing — verify against real
+# sold/removed OLX ad pages during implementation and adjust before relying on them.
+REMOVED_MARKERS = ["já não está disponível", "anúncio inativo", "anúncio removido"]
+SOLD_MARKERS = ["vendido", "já foi vendido"]
+
+
+def check_offer_status(url: str) -> str:
+    """Fetch an ad's own page and classify it: 'active' | 'sold' | 'removed' | 'unknown'."""
+    try:
+        r = requests.get(url, headers={**HEADERS, "Accept": "text/html"}, timeout=30)
+    except requests.RequestException:
+        return "unknown"
+    if r.status_code in (404, 410):
+        return "removed"
+    if r.status_code != 200:
+        return "unknown"
+    body = r.text.lower()
+    if any(m in body for m in REMOVED_MARKERS):
+        return "removed"
+    if any(m in body for m in SOLD_MARKERS):
+        return "sold"
+    return "active"
+
+
 def _first_photo(o: dict) -> str | None:
     photos = o.get("photos") or []
     if not photos:
