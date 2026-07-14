@@ -15,6 +15,8 @@ load_dotenv()
 st.set_page_config(page_title="Stand · OLX Flip Radar", page_icon="🚗", layout="wide")
 
 RESALE_FACTOR = 0.85
+DEALS_PAGE_SIZE = 20
+ADS_PAGE_SIZE = 200
 
 CONF_META = {
     "alta": ("High", "#2f7d4f"),
@@ -50,6 +52,29 @@ def score_color(score):
     return "#b5623a"
 
 
+def pagination_controls(key, total_pages, widget_key=None):
+    widget_key = widget_key or key
+    st.session_state.setdefault(key, 1)
+    page = min(max(st.session_state[key], 1), total_pages)
+    st.session_state[key] = page
+    c1, c2, c3 = st.columns([1, 3, 1])
+    with c1:
+        if st.button("← Prev", key=f"{widget_key}_prev", disabled=page <= 1, use_container_width=True):
+            st.session_state[key] = page - 1
+            st.rerun()
+    with c2:
+        st.markdown(
+            f'<div style="text-align:center;padding-top:8px;font-size:12px;color:#8c856f">'
+            f'Page {page} of {total_pages}</div>',
+            unsafe_allow_html=True,
+        )
+    with c3:
+        if st.button("Next →", key=f"{widget_key}_next", disabled=page >= total_pages, use_container_width=True):
+            st.session_state[key] = page + 1
+            st.rerun()
+    return page
+
+
 def secret(name):
     try:
         value = st.secrets.get(name)
@@ -74,6 +99,12 @@ def load(table, order=None, limit=2000):
 @st.cache_data(ttl=120)
 def count_rows(table):
     return sb().table(table).select("id", count="exact").limit(1).execute().count
+
+
+@st.cache_data(ttl=120)
+def load_ads_page(offset, limit):
+    q = sb().table("ads").select("*").order("first_seen", desc=True)
+    return pd.DataFrame(q.range(offset, offset + limit - 1).execute().data)
 
 
 def minutes_since(ts: str) -> float:
@@ -209,12 +240,14 @@ def render_deals_tab():
         min_profit, max_profit = f1.slider("PROFIT (€)", profit_lo, profit_hi, (profit_lo, profit_hi), step=10)
         min_km, max_km = f2.slider("MILEAGE (KM)", km_lo, km_hi, (km_lo, km_hi), step=1000)
         min_year, max_year = f3.slider("YEAR", year_lo, year_hi, (year_lo, year_hi))
-        f4, f5, f6 = st.columns(3)
+        f4, f5, f6, f7 = st.columns(4)
         brand_opts = sorted(deals["brand"].dropna().unique())
         brand = f4.selectbox("BRAND", ["All brands"] + brand_opts)
-        conf = f5.selectbox("TRUST", ["All levels", "alta", "media", "baixa"],
+        region_opts = sorted(deals["region"].dropna().unique())
+        region = f5.selectbox("REGION", ["All regions"] + region_opts)
+        conf = f6.selectbox("TRUST", ["All levels", "alta", "media", "baixa"],
                              format_func=lambda c: c if c == "All levels" else CONF_META[c][0])
-        only_active = f6.checkbox("Active listings only", value=False)
+        only_active = f7.checkbox("Active listings only", value=True)
 
     view = deals[~deals["ad_id"].isin(st.session_state.skipped_ids)]
     view = view[(view["est_profit"] >= min_profit) & (view["est_profit"] <= max_profit)]
@@ -222,6 +255,8 @@ def render_deals_tab():
     view = view[view["year"].isna() | view["year"].between(min_year, max_year)]
     if brand != "All brands":
         view = view[view["brand"] == brand]
+    if region != "All regions":
+        view = view[view["region"] == region]
     if conf != "All levels":
         view = view[view["confidence"] == conf]
     if only_active and "status" in view:
@@ -240,8 +275,14 @@ def render_deals_tab():
                     st.session_state.skipped_ids = set()
                     st.rerun()
 
+    view = view.sort_values("score", ascending=False)
+    total_pages = max(1, -(-len(view) // DEALS_PAGE_SIZE))
+
     st.write("")
-    for _, d in view.sort_values("score", ascending=False).iterrows():
+    page = pagination_controls("deals_page", total_pages)
+    start = (page - 1) * DEALS_PAGE_SIZE
+    st.write("")
+    for _, d in view.iloc[start:start + DEALS_PAGE_SIZE].iterrows():
         verdict, vbg, vcolor = verdict_for(d["display_score"])
         conf_label, conf_color = CONF_META.get(d["confidence"], ("—", "#a09a84"))
         with st.container(border=True):
@@ -305,6 +346,9 @@ def render_deals_tab():
                     st.session_state.skipped_ids = st.session_state.skipped_ids | {int(d["ad_id"])}
                     st.rerun()
 
+    st.write("")
+    pagination_controls("deals_page", total_pages, widget_key="deals_page_bottom")
+
 
 def render_market_tab():
     if stats.empty:
@@ -312,11 +356,22 @@ def render_market_tab():
         return
 
     display = stats.merge(liq, on=["brand", "model", "year_bucket"], how="left") if not liq.empty else stats.copy()
-    display = display.sort_values("n", ascending=False)
+
+    sort_options = {
+        "Sample size (N)": "n",
+        "Median price": "median_price",
+        "Active listings": "active_ads",
+        "Days to sell": "median_days_to_sell",
+        "Model": ["brand", "model"],
+    }
+    sc1, sc2 = st.columns([3, 1])
+    sort_label = sc1.selectbox("SORT BY", list(sort_options.keys()))
+    descending = sc2.checkbox("Descending", value=True)
+    display = display.sort_values(sort_options[sort_label], ascending=not descending, na_position="last")
     total_models = len(display)
     display = display.head(40)
 
-    st.caption(f"Market snapshot across {total_models} tracked models (showing top {len(display)} by sample size) · "
+    st.caption(f"Market snapshot across {total_models} tracked models (showing top {len(display)} by {sort_label.lower()}) · "
                f"medians need ≥5 comparable ads in the last 90 days")
 
     with st.container(border=True):
@@ -380,14 +435,22 @@ def render_market_tab():
 
 
 def render_ads_tab():
-    if ads.empty:
+    total_ads = count_rows("ads") or 0
+    if not total_ads:
         st.info("No ads tracked yet.")
         return
+
+    total_pages = max(1, -(-total_ads // ADS_PAGE_SIZE))
+    page = pagination_controls("ads_page", total_pages)
+    page_ads = load_ads_page((page - 1) * ADS_PAGE_SIZE, ADS_PAGE_SIZE)
+
     st.dataframe(
-        ads[["title", "price", "brand", "model", "year", "mileage", "region", "url", "first_seen"]],
-        use_container_width=True, hide_index=True,
+        page_ads[["title", "price", "brand", "model", "year", "mileage", "region", "url", "first_seen"]],
+        use_container_width=True, hide_index=True, height=700,
         column_config={"url": st.column_config.LinkColumn("link")},
     )
+    st.write("")
+    pagination_controls("ads_page", total_pages, widget_key="ads_page_bottom")
 
 
 def render_detail(ad_id):
