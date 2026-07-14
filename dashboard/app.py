@@ -129,6 +129,20 @@ def count_rows(table):
     return sb().table(table).select("id", count="exact").limit(1).execute().count
 
 
+def set_flag(ad_id: int, flag: str):
+    sb().table("ad_flags").upsert({"ad_id": int(ad_id), "flag": flag}).execute()
+    st.cache_data.clear()
+
+
+def clear_flag(ad_id: int, flag: str):
+    sb().table("ad_flags").delete().eq("ad_id", int(ad_id)).eq("flag", flag).execute()
+    st.cache_data.clear()
+
+
+def toggle_flag(ad_id: int, flag: str, currently_set: bool):
+    (clear_flag if currently_set else set_flag)(ad_id, flag)
+
+
 @st.cache_data(ttl=120)
 def load_ads_page(offset, limit):
     q = sb().table("ads").select("*").order("first_seen", desc=True)
@@ -221,7 +235,6 @@ div[data-testid="stCheckbox"] input[type="checkbox"] { accent-color:#1c3d2e; }
 """, unsafe_allow_html=True)
 
 st.session_state.setdefault("active_tab", "deals")
-st.session_state.setdefault("skipped_ids", set())
 st.session_state.setdefault("open_id", None)
 
 deals = load("deals_view", order="created_at")
@@ -229,6 +242,18 @@ ads = load("ads", order="first_seen", limit=5000)
 runs = load("crawl_runs", order="started_at", limit=1)
 stats = load("market_stats")
 liq = load("market_liquidity")
+flags = load("ad_flags")
+
+if not flags.empty:
+    skipped_ids = set(flags.loc[flags["flag"] == "skipped", "ad_id"].astype(int))
+    fav_ids = set(flags.loc[flags["flag"] == "favourite", "ad_id"].astype(int))
+else:
+    skipped_ids = set()
+    fav_ids = set()
+
+if not ads.empty:
+    ads = ads.copy()
+    ads["year_bucket"] = (ads["year"] // 2 * 2).astype("Int64")
 
 if not deals.empty:
     deals = deals.copy()
@@ -268,7 +293,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-TABS = [("deals", "Deals"), ("market", "Market"), ("ads", "Ads")]
+TABS = [("deals", "Deals"), ("favourites", "Favourites"), ("market", "Market"), ("ads", "Ads")]
 tab_cols = st.columns(len(TABS))
 for col, (key, label) in zip(tab_cols, TABS):
     with col:
@@ -282,6 +307,76 @@ for col, (key, label) in zip(tab_cols, TABS):
             if st.button(label, key=f"tab_{key}", use_container_width=True):
                 st.session_state.active_tab = key
                 st.session_state.open_id = None
+                st.rerun()
+
+
+def render_deal_card(d):
+    verdict, vbg, vcolor = verdict_for(d["display_score"])
+    conf_label, conf_color = CONF_META.get(d["confidence"], ("—", "#a09a84"))
+    with st.container(border=True):
+        c0, c1, c2, c3, c4, c5 = st.columns([0.7, 3, 2.2, 1.8, 1.1, 1.4])
+        with c0:
+            if pd.notna(d.get("photo_url")):
+                st.image(d["photo_url"], use_container_width=True)
+            else:
+                st.markdown('<div class="stand-photo">PHOTO</div>', unsafe_allow_html=True)
+            if d.get("status") == "desaparecido":
+                st.caption("👻 gone")
+        with c1:
+            year = int(d["year"]) if pd.notna(d.get("year")) else "?"
+            km = f"{int(d['mileage']):,}" if pd.notna(d.get("mileage")) else "?"
+            fuel = d["fuel"] if pd.notna(d.get("fuel")) else "?"
+            region = d["region"] if pd.notna(d.get("region")) else "?"
+            st.markdown(
+                f'<div class="stand-row-title">{esc(d["title"])}</div>'
+                f'<div class="stand-meta">{year} · {km} km · {esc(fuel)} · {esc(region)}</div>',
+                unsafe_allow_html=True,
+            )
+        with c2:
+            bar_pct = min(100, d["price"] / d["median_price"] * 100) if d["median_price"] else 0
+            st.markdown(
+                f'<div style="display:flex;align-items:baseline;gap:6px">'
+                f'<span class="stand-mono" style="font-weight:600">{money(d["price"])}</span>'
+                f'<span style="font-size:10.5px;color:#9a927b">/{money(d["median_price"])} mkt</span></div>'
+                f'<div class="stand-bar-bg"><div class="stand-bar-fill" style="width:{bar_pct:.0f}%"></div></div>'
+                f'<div class="stand-mono" style="font-size:11px;color:#c99a3f;margin-top:5px">'
+                f'{d["discount"] * 100:.0f}% below median</div>',
+                unsafe_allow_html=True,
+            )
+        with c3:
+            sell = d.get("median_days_to_sell")
+            sell_text = f"~{int(sell)}d to sell" if pd.notna(sell) else "—"
+            drop = d.get("price_drop")
+            drop_html = (f'<span style="color:#a4502f;font-weight:500"> · ↓{money(drop)}</span>'
+                         if pd.notna(drop) else "")
+            days = int(d["days_listed"]) if pd.notna(d.get("days_listed")) else 0
+            n = int(d["n"]) if pd.notna(d.get("n")) else 0
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:6px">'
+                f'<span style="width:8px;height:8px;border-radius:50%;background:{conf_color};'
+                f'display:inline-block"></span><span style="font-size:12px">{conf_label} trust · {n} comps</span></div>'
+                f'<div style="font-size:12px;color:#6a6454;margin-top:6px">{sell_text} · {days}d listed{drop_html}</div>',
+                unsafe_allow_html=True,
+            )
+        with c4:
+            st.markdown(
+                f'<span class="stand-badge" style="background:{vbg};color:{vcolor}">{verdict.upper()}</span>'
+                f'<div style="font:600 17px \'Newsreader\',serif;color:#2f6b47;margin-top:6px">'
+                f'+{money(d["est_profit"])}</div>'
+                f'<div class="stand-label">est. margin</div>',
+                unsafe_allow_html=True,
+            )
+        with c5:
+            ad_id = int(d["ad_id"])
+            is_fav = ad_id in fav_ids
+            if st.button("Open", key=f"open_{ad_id}", use_container_width=True):
+                st.session_state.open_id = ad_id
+                st.rerun()
+            if st.button("★ Fav" if is_fav else "☆ Fav", key=f"fav_{ad_id}", use_container_width=True):
+                toggle_flag(ad_id, "favourite", is_fav)
+                st.rerun()
+            if st.button("Skip", key=f"skip_{ad_id}", use_container_width=True):
+                set_flag(ad_id, "skipped")
                 st.rerun()
 
 
@@ -350,7 +445,7 @@ def render_deals_tab():
     saved.update(profit=(min_profit, max_profit), km=(min_km, max_km), year=(min_year, max_year),
                  brand=brand, region=region, trust=conf, active=only_active)
 
-    view = deals[~deals["ad_id"].isin(st.session_state.skipped_ids)]
+    view = deals[~deals["ad_id"].isin(skipped_ids)]
     view = view[(view["est_profit"] >= min_profit) & (view["est_profit"] <= max_profit)]
     view = view[view["mileage"].isna() | view["mileage"].between(min_km, max_km)]
     view = view[view["year"].isna() | view["year"].between(min_year, max_year)]
@@ -363,17 +458,17 @@ def render_deals_tab():
     if only_active and "status" in view:
         view = view[view["status"] == "ativo"]
 
-    skipped = st.session_state.skipped_ids
     with st.container(border=True):
         s1, s2, s3, s4 = st.columns([1, 1, 1, 1])
         s1.metric("LIVE DEALS", len(view))
         s2.metric("TOTAL EST. PROFIT", money(view["est_profit"].sum()) if len(view) else "—")
         s3.metric("AVG DISCOUNT", f"{view['discount'].mean() * 100:.0f}%" if len(view) else "—")
         with s4:
-            if skipped:
-                st.caption(f"{len(skipped)} skipped")
+            if skipped_ids:
+                st.caption(f"{len(skipped_ids)} skipped")
                 if st.button("Undo all", key="undo_all"):
-                    st.session_state.skipped_ids = set()
+                    for ad_id in skipped_ids:
+                        clear_flag(ad_id, "skipped")
                     st.rerun()
 
     view = view.sort_values("score", ascending=False)
@@ -384,71 +479,21 @@ def render_deals_tab():
     start = (page - 1) * DEALS_PAGE_SIZE
     st.write("")
     for _, d in view.iloc[start:start + DEALS_PAGE_SIZE].iterrows():
-        verdict, vbg, vcolor = verdict_for(d["display_score"])
-        conf_label, conf_color = CONF_META.get(d["confidence"], ("—", "#a09a84"))
-        with st.container(border=True):
-            c0, c1, c2, c3, c4, c5 = st.columns([0.7, 3, 2.2, 1.8, 1.1, 1.4])
-            with c0:
-                if pd.notna(d.get("photo_url")):
-                    st.image(d["photo_url"], use_container_width=True)
-                else:
-                    st.markdown('<div class="stand-photo">PHOTO</div>', unsafe_allow_html=True)
-                if d.get("status") == "desaparecido":
-                    st.caption("👻 gone")
-            with c1:
-                year = int(d["year"]) if pd.notna(d.get("year")) else "?"
-                km = f"{int(d['mileage']):,}" if pd.notna(d.get("mileage")) else "?"
-                fuel = d["fuel"] if pd.notna(d.get("fuel")) else "?"
-                region = d["region"] if pd.notna(d.get("region")) else "?"
-                st.markdown(
-                    f'<div class="stand-row-title">{esc(d["title"])}</div>'
-                    f'<div class="stand-meta">{year} · {km} km · {esc(fuel)} · {esc(region)}</div>',
-                    unsafe_allow_html=True,
-                )
-            with c2:
-                bar_pct = min(100, d["price"] / d["median_price"] * 100) if d["median_price"] else 0
-                st.markdown(
-                    f'<div style="display:flex;align-items:baseline;gap:6px">'
-                    f'<span class="stand-mono" style="font-weight:600">{money(d["price"])}</span>'
-                    f'<span style="font-size:10.5px;color:#9a927b">/{money(d["median_price"])} mkt</span></div>'
-                    f'<div class="stand-bar-bg"><div class="stand-bar-fill" style="width:{bar_pct:.0f}%"></div></div>'
-                    f'<div class="stand-mono" style="font-size:11px;color:#c99a3f;margin-top:5px">'
-                    f'{d["discount"] * 100:.0f}% below median</div>',
-                    unsafe_allow_html=True,
-                )
-            with c3:
-                sell = d.get("median_days_to_sell")
-                sell_text = f"~{int(sell)}d to sell" if pd.notna(sell) else "—"
-                drop = d.get("price_drop")
-                drop_html = (f'<span style="color:#a4502f;font-weight:500"> · ↓{money(drop)}</span>'
-                             if pd.notna(drop) else "")
-                days = int(d["days_listed"]) if pd.notna(d.get("days_listed")) else 0
-                n = int(d["n"]) if pd.notna(d.get("n")) else 0
-                st.markdown(
-                    f'<div style="display:flex;align-items:center;gap:6px">'
-                    f'<span style="width:8px;height:8px;border-radius:50%;background:{conf_color};'
-                    f'display:inline-block"></span><span style="font-size:12px">{conf_label} trust · {n} comps</span></div>'
-                    f'<div style="font-size:12px;color:#6a6454;margin-top:6px">{sell_text} · {days}d listed{drop_html}</div>',
-                    unsafe_allow_html=True,
-                )
-            with c4:
-                st.markdown(
-                    f'<span class="stand-badge" style="background:{vbg};color:{vcolor}">{verdict.upper()}</span>'
-                    f'<div style="font:600 17px \'Newsreader\',serif;color:#2f6b47;margin-top:6px">'
-                    f'+{money(d["est_profit"])}</div>'
-                    f'<div class="stand-label">est. margin</div>',
-                    unsafe_allow_html=True,
-                )
-            with c5:
-                if st.button("Open", key=f"open_{d['ad_id']}", use_container_width=True):
-                    st.session_state.open_id = int(d["ad_id"])
-                    st.rerun()
-                if st.button("Skip", key=f"skip_{d['ad_id']}", use_container_width=True):
-                    st.session_state.skipped_ids = st.session_state.skipped_ids | {int(d["ad_id"])}
-                    st.rerun()
+        render_deal_card(d)
 
     st.write("")
     pagination_controls("deals_page", total_pages, widget_key="deals_page_bottom")
+
+
+def render_favourites_tab():
+    if not fav_ids:
+        st.info("No favourites yet — tap ☆ Fav on a deal to save it here.")
+        return
+    view = deals[deals["ad_id"].isin(fav_ids)].sort_values("score", ascending=False)
+    st.caption(f"{len(view)} favourited")
+    st.write("")
+    for _, d in view.iterrows():
+        render_deal_card(d)
 
 
 def render_market_tab():
@@ -585,7 +630,7 @@ def render_market_tab():
     st.write("")
     st.markdown("**Model deep-dive**")
     deep_opts = sorted(ads["brand"].dropna().unique()) if not ads.empty else []
-    s1, s2 = st.columns(2)
+    s1, s2, s3 = st.columns(3)
     sel_brand = s1.selectbox("Brand", deep_opts, key="market_deep_brand") if deep_opts else None
     pts = pd.DataFrame()
     if sel_brand:
@@ -594,6 +639,14 @@ def render_market_tab():
         pts = ads[ads["brand"] == sel_brand]
         if sel_model:
             pts = pts[pts["model"] == sel_model]
+            buckets = sorted(pts["year_bucket"].dropna().astype(int).unique())
+            bucket_opts = ["All years"] + buckets
+            sel_bucket = s3.selectbox(
+                "Year", bucket_opts, key="market_deep_year",
+                format_func=lambda b: b if b == "All years" else f"{b}–{b + 1}",
+            ) if buckets else None
+            if sel_bucket and sel_bucket != "All years":
+                pts = pts[pts["year_bucket"] == sel_bucket]
 
     d1, d2 = st.columns(2)
     with d1:
@@ -761,12 +814,18 @@ def render_detail(ad_id):
     )
 
     st.write("")
-    b1, b2 = st.columns([3, 1])
+    b1, b2, b3 = st.columns([2, 1, 1])
+    is_fav = ad_id in fav_ids
     with b1:
         st.link_button("Open on OLX ↗", d["url"], use_container_width=True)
     with b2:
+        if st.button("★ Favourited" if is_fav else "☆ Favourite", key=f"fav_detail_{ad_id}",
+                      use_container_width=True):
+            toggle_flag(ad_id, "favourite", is_fav)
+            st.rerun()
+    with b3:
         if st.button("Skip", key=f"skip_detail_{ad_id}", use_container_width=True):
-            st.session_state.skipped_ids = st.session_state.skipped_ids | {int(ad_id)}
+            set_flag(ad_id, "skipped")
             st.session_state.open_id = None
             st.rerun()
 
@@ -837,6 +896,8 @@ if st.session_state.open_id is not None:
     render_detail(st.session_state.open_id)
 elif st.session_state.active_tab == "deals":
     render_deals_tab()
+elif st.session_state.active_tab == "favourites":
+    render_favourites_tab()
 elif st.session_state.active_tab == "market":
     render_market_tab()
 else:

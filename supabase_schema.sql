@@ -28,6 +28,17 @@ alter table ads add column if not exists url_checked_at timestamptz;
 create index if not exists ads_market_idx on ads (brand, model, year);
 create index if not exists ads_price_idx  on ads (price);
 
+-- Per-ad user flags (skip / favourite). Single-user app, no auth concept,
+-- so keyed only by ad_id + flag rather than a per-user row.
+create table if not exists ad_flags (
+  ad_id      bigint not null references ads(id),
+  flag       text not null,              -- 'skipped' | 'favourite'
+  created_at timestamptz not null default now(),
+  primary key (ad_id, flag)
+);
+
+create index if not exists ad_flags_flag_idx on ad_flags (flag);
+
 create table if not exists deals (
   ad_id        bigint primary key references ads(id),
   price        numeric,
