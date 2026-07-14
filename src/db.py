@@ -94,8 +94,14 @@ def ads_to_check(limit: int, lookback_days: int) -> list[dict]:
 
 
 def update_url_status(rows: list[dict]):
-    for i in range(0, len(rows), 500):
-        client().table("ads").upsert(rows[i:i + 500]).execute()
+    """Plain per-row UPDATE, not upsert — these ids always already exist (they came
+    from a SELECT on ads), and upsert's INSERT ON CONFLICT validates NOT NULL columns
+    (like `url`, absent from this partial payload) on the insert attempt even when the
+    row will only ever be updated."""
+    for r in rows:
+        (client().table("ads")
+         .update({"url_status": r["url_status"], "url_checked_at": r["url_checked_at"]})
+         .eq("id", r["id"]).execute())
 
 
 def start_crawl_run(mode: str) -> int | None:
