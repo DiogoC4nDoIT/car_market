@@ -110,15 +110,18 @@ def check_offer_status(url: str) -> str:
     """Fetch an ad's own page and classify it: 'active' | 'sold' | 'removed' | 'unknown'."""
     try:
         r = _session.get(url, headers={"Accept": "text/html"}, timeout=30)
-    except requests.RequestException:
+    except requests.RequestException as e:
+        log.info("unknown: request exception (%s) for %s", type(e).__name__, url)
         return "unknown"
     if r.status_code in (404, 410):
         return "removed"
     if r.status_code != 200:
+        log.info("unknown: HTTP %d for %s", r.status_code, url)
         return "unknown"
 
     ad = _ad_state(r.text)
     if ad is None:
+        log.info("unknown: no parsable ad state (body len=%d) for %s", len(r.text), url)
         return "unknown"
     status = (ad.get("status") or "").lower()
     if status == "active" and ad.get("isActive"):
