@@ -9,6 +9,8 @@ import re
 import time
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 log = logging.getLogger(__name__)
 
@@ -26,9 +28,17 @@ MAX_OFFSET = 1000   # OLX caps offset; use price buckets to go deeper
 
 # Shared connection pool — reused by every request this module makes (list
 # pages, category discovery, per-ad status checks) instead of a fresh
-# TCP+TLS handshake per call.
+# TCP+TLS handshake per call. The mounted Retry handles transient connection
+# drops and 5xx responses transparently for all of them; 403/429 are
+# deliberately NOT retried here — that's OLX rate-limiting, and hammering it
+# makes it worse (url_checker's submission pacing is the real control).
 _session = requests.Session()
 _session.headers.update(HEADERS)
+_session.mount("https://", HTTPAdapter(max_retries=Retry(
+    total=3, backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504],
+    allowed_methods={"GET"},
+)))
 
 # OLX's "carros" category params never include a brand/marca field (only
 # "modelo") — brand has to be inferred from the free-text title instead.
@@ -58,12 +68,21 @@ def guess_brand(title: str) -> str | None:
 
 
 def _get(params: dict, retries: int = 3) -> dict:
+    err = None
     for attempt in range(retries):
-        r = _session.get(BASE, params=params, timeout=30)
-        if r.status_code == 200:
-            return r.json()
-        log.warning("OLX API %s (attempt %d)", r.status_code, attempt + 1)
+        try:
+            r = _session.get(BASE, params=params, timeout=30)
+        except requests.RequestException as e:  # session-level retries exhausted
+            r, err = None, e
+            log.warning("OLX API %s (attempt %d)", type(e).__name__, attempt + 1)
+        else:
+            if r.status_code == 200:
+                return r.json()
+            err = None
+            log.warning("OLX API %s (attempt %d)", r.status_code, attempt + 1)
         time.sleep(2 ** attempt * 2)
+    if err is not None:
+        raise err
     r.raise_for_status()
     return {}
 

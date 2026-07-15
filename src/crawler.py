@@ -1,6 +1,8 @@
 """Main entry point. Run: python -m src.crawler"""
 import logging
 
+import requests
+
 from . import config, db, deal_engine, notify, olx_api
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -12,8 +14,8 @@ def resolve_category() -> int:
     try:
         if olx_api.fetch_page(cid, 0, price_to=config.MARKET_CEILING):
             return cid
-    except Exception:
-        pass
+    except requests.RequestException as e:
+        log.warning("category_id %s probe failed (%s: %s)", cid, type(e).__name__, e)
     log.warning("category_id %s returned nothing; auto-discovering...", cid)
     discovered = olx_api.discover_category_id()
     if discovered:
@@ -22,10 +24,11 @@ def resolve_category() -> int:
     raise SystemExit("Could not resolve OLX Carros category id")
 
 
-def fetch_incremental(cid: int) -> list[dict]:
+def fetch_incremental(cid: int) -> tuple[list[dict], dict]:
     """Newest first; stop once a whole page is already stored. Known ads are
-    kept so their last_seen/price get refreshed on upsert."""
-    ads, page = [], 0
+    kept so their last_seen/price get refreshed on upsert. Also returns the
+    stored prices already fetched per page, so run() needn't re-query them."""
+    ads, prev_prices, page = [], {}, 0
     while page * olx_api.LIMIT < olx_api.MAX_OFFSET:
         batch = olx_api.fetch_page(cid, page * olx_api.LIMIT,
                                    price_to=config.MARKET_CEILING)
@@ -33,10 +36,11 @@ def fetch_incremental(cid: int) -> list[dict]:
             break
         ads.extend(batch)
         known = db.known_prices([a["id"] for a in batch])
+        prev_prices.update(known)
         if all(a["id"] in known for a in batch):
             break
         page += 1
-    return ads
+    return ads, prev_prices
 
 
 def price_history_rows(ads: list[dict], prev: dict) -> list[dict]:
@@ -59,8 +63,9 @@ def run():
     if config.DEEP_SWEEP:
         log.info("deep sweep (price-bucketed) up to %.0f EUR", config.MARKET_CEILING)
         ads = olx_api.fetch_deep_sweep(cid, config.MARKET_CEILING)
+        prev_prices = None
     else:
-        ads = fetch_incremental(cid)
+        ads, prev_prices = fetch_incremental(cid)
 
     log.info("fetched %d ads", len(ads))
     if not ads:
@@ -70,7 +75,8 @@ def run():
     for a in ads:
         a["is_blacklisted"] = deal_engine.is_blacklisted(a)
 
-    prev_prices = db.known_prices([a["id"] for a in ads])
+    if prev_prices is None:
+        prev_prices = db.known_prices([a["id"] for a in ads])
     db.upsert_ads(ads)
     history = price_history_rows(ads, prev_prices)
     log.info("price history rows: %d", len(history))
