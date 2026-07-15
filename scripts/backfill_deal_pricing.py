@@ -18,18 +18,15 @@ log = logging.getLogger(__name__)
 
 
 def fetch_deals_with_ads() -> list[dict]:
-    rows, offset, page = [], 0, 1000
-    while True:
-        res = (db.client().table("deals")
-               .select("ad_id, ads(brand, model, year, mileage, fuel, price, is_blacklisted)")
-               .range(offset, offset + page - 1).execute())
-        for r in res.data:
+    query = (db.client().table("deals")
+             .select("ad_id, ads(brand, model, year, mileage, fuel, price, is_blacklisted)"))
+    rows = []
+    for page in db._pages(query):
+        for r in page:
             ad = r.pop("ads") or {}
             ad["id"] = r["ad_id"]
             rows.append(ad)
-        if len(res.data) < page:
-            return rows
-        offset += page
+    return rows
 
 
 def main():

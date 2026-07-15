@@ -1,8 +1,12 @@
+import logging
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from supabase import create_client
 
 from . import config
+
+log = logging.getLogger(__name__)
 
 _client = None
 
@@ -10,15 +14,44 @@ _client = None
 def client():
     global _client
     if _client is None:
+        if not (config.SUPABASE_URL and config.SUPABASE_KEY):
+            raise RuntimeError("SUPABASE_URL / SUPABASE_KEY not configured (see .env.example)")
         _client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
     return _client
+
+
+def _chunks(seq: list, size: int = 500):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def _pages(query, page_size: int = 1000):
+    """Page a PostgREST query past the server's per-request row cap (db-max-rows,
+    typically 1000, applied regardless of any client-side .limit()): keep asking
+    for the next .range() until a short page signals the result set is done."""
+    offset = 0
+    while True:
+        page = query.range(offset, offset + page_size - 1).execute().data
+        if page:
+            yield page
+        if len(page) < page_size:
+            return
+        offset += page_size
+
+
+def _warn_if_no_rows(res, what: str):
+    """PostgREST answers 200 with empty data when RLS filters out an UPDATE's
+    target rows (bit us before — see the RLS note in supabase_schema.sql), so a
+    write that matched nothing needs to be loud."""
+    if not res.data:
+        log.warning("update matched no rows (%s) — RLS policy or bad filter?", what)
 
 
 def known_prices(ids: list[int]) -> dict[int, float | None]:
     """Currently stored price per known ad id (missing id = never seen)."""
     out = {}
-    for i in range(0, len(ids), 500):
-        res = client().table("ads").select("id, price").in_("id", ids[i:i + 500]).execute()
+    for chunk in _chunks(ids):
+        res = client().table("ads").select("id, price").in_("id", chunk).execute()
         out.update({r["id"]: r["price"] for r in res.data})
     return out
 
@@ -28,20 +61,12 @@ def upsert_ads(ads: list[dict]):
     rows = {a["id"]: {**{k: v for k, v in a.items() if not k.startswith("_")},
                       "last_seen": now}
             for a in ads}
-    rows = list(rows.values())
-    for i in range(0, len(rows), 500):
-        client().table("ads").upsert(rows[i:i + 500]).execute()
+    for chunk in _chunks(list(rows.values())):
+        client().table("ads").upsert(chunk).execute()
 
 
 def read_view(view: str) -> list[dict]:
-    out, page = [], 0
-    while True:
-        res = (client().table(view).select("*")
-               .range(page * 1000, page * 1000 + 999).execute())
-        out.extend(res.data)
-        if len(res.data) < 1000:
-            return out
-        page += 1
+    return [r for page in _pages(client().table(view).select("*")) for r in page]
 
 
 def market_stats() -> list[dict]:
@@ -57,8 +82,8 @@ def market_stats_fuel() -> list[dict]:
 
 
 def insert_price_history(rows: list[dict]):
-    for i in range(0, len(rows), 500):
-        client().table("price_history").insert(rows[i:i + 500]).execute()
+    for chunk in _chunks(rows):
+        client().table("price_history").insert(chunk).execute()
 
 
 def existing_deal_ids(ids: list[int]) -> set[int]:
@@ -81,17 +106,21 @@ def insert_deals(deals: list[dict]):
 
 
 def mark_notified(ad_id: int):
-    client().table("deals").update({"notified": True}).eq("ad_id", ad_id).execute()
+    res = client().table("deals").update({"notified": True}).eq("ad_id", ad_id).execute()
+    _warn_if_no_rows(res, f"deals.notified ad_id={ad_id}")
 
 
 def update_deal_pricing(rows: list[dict]):
     """Plain per-row UPDATE of recomputed pricing fields only — leaves
-    notified/created_at/fingerprint untouched, unlike insert_deals()'s upsert."""
+    notified/created_at/fingerprint untouched, unlike insert_deals()'s upsert.
+    (Per-row because every row carries different values; only used by the
+    one-off backfill script.)"""
     fields = ("median_price", "discount", "est_profit", "n", "confidence", "score")
     for r in rows:
-        (client().table("deals")
-         .update({f: r[f] for f in fields})
-         .eq("ad_id", r["ad_id"]).execute())
+        res = (client().table("deals")
+               .update({f: r[f] for f in fields})
+               .eq("ad_id", r["ad_id"]).execute())
+        _warn_if_no_rows(res, f"deals pricing ad_id={r['ad_id']}")
 
 
 def deal_ad_ids() -> list[int]:
@@ -111,50 +140,48 @@ def ads_to_check(limit: int, lookback_days: int, priority_ids: list[int] = ()) -
     seen: set[int] = set()
     out: list[dict] = []
 
-    priority_ids = list(priority_ids)
-    for i in range(0, len(priority_ids), 500):
-        res = (client().table("ads").select("id, url")
-               .in_("id", priority_ids[i:i + 500])
-               .or_("url_status.is.null,url_status.eq.active")
-               .execute())
-        for r in res.data:
+    def add(rows):
+        for r in rows:
             if r["id"] not in seen:
                 seen.add(r["id"])
                 out.append(r)
 
-    # PostgREST caps rows per request (project's db-max-rows, typically 1000)
-    # regardless of the client-requested .limit(), so page through .range() —
-    # same pattern as read_view() — to actually reach `limit` when it's larger.
-    backlog_target = len(out) + limit
-    page = 0
-    while len(out) < backlog_target:
-        lo, hi = page * 1000, page * 1000 + 999
+    for chunk in _chunks(list(priority_ids)):
         res = (client().table("ads").select("id, url")
+               .in_("id", chunk)
+               .or_("url_status.is.null,url_status.eq.active")
+               .execute())
+        add(res.data)
+
+    backlog_target = len(out) + limit
+    backlog = (client().table("ads").select("id, url")
                .or_("url_status.is.null,url_status.eq.active")
                .gte("first_seen", since)
-               .order("url_checked_at", nullsfirst=True)
-               .range(lo, hi).execute())
-        if not res.data:
-            break
-        for r in res.data:
-            if r["id"] not in seen:
-                seen.add(r["id"])
-                out.append(r)
-        if len(res.data) < 1000:
-            break
-        page += 1
+               .order("url_checked_at", nullsfirst=True))
+    if len(out) < backlog_target:
+        for page in _pages(backlog):
+            add(page)
+            if len(out) >= backlog_target:
+                break
     return out[:backlog_target]
 
 
 def update_url_status(rows: list[dict]):
-    """Plain per-row UPDATE, not upsert — these ids always already exist (they came
-    from a SELECT on ads), and upsert's INSERT ON CONFLICT validates NOT NULL columns
-    (like `url`, absent from this partial payload) on the insert attempt even when the
-    row will only ever be updated."""
+    """Plain UPDATEs, not upsert — these ids always already exist (they came from
+    a SELECT on ads), and upsert's INSERT ON CONFLICT validates NOT NULL columns
+    (like `url`, absent from this partial payload) on the insert attempt even when
+    the row will only ever be updated. Rows are grouped by identical payload
+    (status only takes a few values and each run shares one url_checked_at), so a
+    full batch costs a handful of requests instead of one per row."""
+    groups = defaultdict(list)
     for r in rows:
-        (client().table("ads")
-         .update({"url_status": r["url_status"], "url_checked_at": r["url_checked_at"]})
-         .eq("id", r["id"]).execute())
+        groups[(r["url_status"], r["url_checked_at"])].append(r["id"])
+    for (status, checked_at), ids in groups.items():
+        for chunk in _chunks(ids):
+            res = (client().table("ads")
+                   .update({"url_status": status, "url_checked_at": checked_at})
+                   .in_("id", chunk).execute())
+            _warn_if_no_rows(res, f"ads.url_status={status} ({len(chunk)} ids)")
 
 
 def start_crawl_run(mode: str) -> int | None:
@@ -165,8 +192,9 @@ def start_crawl_run(mode: str) -> int | None:
 def finish_crawl_run(run_id: int | None, ads_fetched: int, deals_found: int):
     if run_id is None:
         return
-    client().table("crawl_runs").update({
+    res = client().table("crawl_runs").update({
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "ads_fetched": ads_fetched,
         "deals_found": deals_found,
     }).eq("id", run_id).execute()
+    _warn_if_no_rows(res, f"crawl_runs.finished_at id={run_id}")
