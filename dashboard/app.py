@@ -3,18 +3,26 @@ Deploy free at https://share.streamlit.io (secrets: SUPABASE_URL, SUPABASE_KEY).
 """
 import html
 import os
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from supabase import create_client
 
+# dashboard/ isn't a package and Streamlit puts only the script's own dir on
+# sys.path, so reach the repo root explicitly to share the crawler's pure
+# modules (thresholds + market-key logic) instead of hand-mirroring them.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src import config, deal_engine  # noqa: E402
+
 load_dotenv()
 
 st.set_page_config(page_title="Stand · OLX Flip Radar", page_icon="🚗", layout="wide")
 
-RESALE_FACTOR = 0.85
 DEALS_PAGE_SIZE = 20
 ADS_PAGE_SIZE = 200
 
@@ -105,14 +113,11 @@ def sb():
     return create_client(secret("SUPABASE_URL"), secret("SUPABASE_KEY"))
 
 
-@st.cache_data(ttl=120)
-def load(table, order=None, limit=2000):
+def _fetch_paged(q, limit):
     """PostgREST caps a single request at its configured max-rows (commonly 1000)
     regardless of the .limit() we pass, so page via .range() until `limit` is hit
-    or the table's exhausted — otherwise `limit=5000` silently truncates to ~1000."""
-    q = sb().table(table).select("*")
-    if order:
-        q = q.order(order, desc=True)
+    or the result set is exhausted — otherwise `limit=5000` silently truncates
+    to ~1000."""
     rows, offset = [], 0
     while offset < limit:
         chunk = min(1000, limit - offset)
@@ -122,6 +127,14 @@ def load(table, order=None, limit=2000):
             break
         offset += chunk
     return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=120)
+def load(table, order=None, limit=2000):
+    q = sb().table(table).select("*")
+    if order:
+        q = q.order(order, desc=True)
+    return _fetch_paged(q, limit)
 
 
 @st.cache_data(ttl=120)
@@ -173,29 +186,12 @@ def load_ads_page(offset, limit):
     return pd.DataFrame(q.range(offset, offset + limit - 1).execute().data)
 
 
-KM_BANDS = (150_000, 250_000)  # mirrors src/config.py:KM_BANDS; dashboard is
-                                # intentionally standalone from the crawler process (CLAUDE.md)
-
-
-def km_band(mileage) -> int:
-    """Mirrors src/deal_engine.py:km_band() — must match market_stats_fine's CASE bucketing."""
-    lo, hi = KM_BANDS
-    if mileage < lo:
-        return 0
-    return lo if mileage < hi else hi
-
-
-def fine_key(brand, model, year_bucket, fuel, mileage):
-    """Mirrors src/deal_engine.py:fine_key()."""
-    return (str(brand).lower(), str(model).lower(), int(year_bucket), str(fuel).lower(), km_band(mileage))
-
-
 @st.cache_data(ttl=120)
 def load_comps(brand, model, year_lo, year_hi, fuel=None, mileage_lo=None, mileage_hi=None):
     """Fetch comps directly from Supabase (uncapped), unlike the 5000-row `ads` df. `fuel`
     is always enforced when known (different fuel types price differently); mileage band is
     only passed when it matches the fine basis deal_engine.evaluate() used for this deal's
-    stored median (see fine_key() above)."""
+    stored median (see deal_engine.fine_key())."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     q = (sb().table("ads").select("*")
          .eq("brand", brand).eq("model", model)
@@ -207,15 +203,7 @@ def load_comps(brand, model, year_lo, year_hi, fuel=None, mileage_lo=None, milea
         q = q.gte("mileage", mileage_lo)
     if mileage_hi is not None:
         q = q.lt("mileage", mileage_hi)
-    rows, offset, limit = [], 0, 2000
-    while offset < limit:
-        chunk = min(1000, limit - offset)
-        page = q.range(offset, offset + chunk - 1).execute().data
-        rows.extend(page)
-        if len(page) < chunk:
-            break
-        offset += chunk
-    return pd.DataFrame(rows)
+    return _fetch_paged(q, 2000)
 
 
 @st.cache_data(ttl=120)
@@ -238,10 +226,6 @@ def minutes_since(ts: str) -> float:
     return (datetime.now(timezone.utc) - dt).total_seconds() / 60
 
 
-ACTIVE_WINDOW_DAYS = 8  # mirrors src/config.py:ACTIVE_WINDOW_DAYS; dashboard is
-                        # intentionally standalone from the crawler process (CLAUDE.md)
-
-
 def comp_sold_info(last_seen, olx_created_at, url_status=None):
     """Whether a comp looks sold, and days-to-sell if computable. Prefers the
     direct url_status check (src/url_checker.py); falls back to the same 8-day
@@ -254,7 +238,7 @@ def comp_sold_info(last_seen, olx_created_at, url_status=None):
         return False, None
     else:
         ls = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
-        sold = (datetime.now(timezone.utc) - ls).days >= ACTIVE_WINDOW_DAYS
+        sold = (datetime.now(timezone.utc) - ls).days >= config.ACTIVE_WINDOW_DAYS
     if not sold or pd.isna(last_seen) or pd.isna(olx_created_at):
         return sold, None
     ls = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
@@ -617,7 +601,7 @@ def render_market_tab():
     display = display.sort_values("n", ascending=False, na_position="last")
 
     now_ts = datetime.now(timezone.utc)
-    active_cutoff = (now_ts - timedelta(days=ACTIVE_WINDOW_DAYS)).isoformat()
+    active_cutoff = (now_ts - timedelta(days=config.ACTIVE_WINDOW_DAYS)).isoformat()
     week_cutoff = (now_ts - timedelta(days=7)).isoformat()
     count_kwargs = dict(brand=brand, region=region, fuel=fuel, yr_lo=yr_lo, yr_hi=yr_hi, p_lo=p_lo, p_hi=p_hi)
     tracked_ads = count_ads(**count_kwargs)
@@ -816,7 +800,7 @@ def render_detail(ad_id):
             unsafe_allow_html=True,
         )
 
-    resale_value = d["median_price"] * RESALE_FACTOR
+    resale_value = d["median_price"] * config.RESALE_FACTOR
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(
@@ -825,7 +809,7 @@ def render_detail(ad_id):
             f'<div style="display:flex;justify-content:space-between;font-size:13px;color:#5b5647;padding:4px 0">'
             f'<span>Market median</span><span class="stand-mono">{money(d["median_price"])}</span></div>'
             f'<div style="display:flex;justify-content:space-between;font-size:13px;color:#5b5647;padding:4px 0">'
-            f'<span>Resale @ {int(RESALE_FACTOR * 100)}%</span><span class="stand-mono">{money(resale_value)}</span></div>'
+            f'<span>Resale @ {int(config.RESALE_FACTOR * 100)}%</span><span class="stand-mono">{money(resale_value)}</span></div>'
             f'<div style="display:flex;justify-content:space-between;font-size:13px;color:#5b5647;padding:4px 0">'
             f'<span>Ask price</span><span class="stand-mono">− {money(d["price"])}</span></div>'
             '<div style="height:1px;background:#e0d7c1;margin:8px 0"></div>'
@@ -922,7 +906,7 @@ def render_detail(ad_id):
         # used, so mileage-banded comps should match it too. Fuel itself is always
         # enforced below regardless of this match — different fuel types have
         # structurally different prices and are never "comparable".
-        key = fine_key(d["brand"], d["model"], bucket, fuel, mileage)
+        key = deal_engine.fine_key(d["brand"], d["model"], bucket, fuel, mileage)
         match = fine_stats[
             (fine_stats["brand"].str.lower() == key[0]) & (fine_stats["model"].str.lower() == key[1])
             & (fine_stats["year_bucket"] == key[2]) & (fine_stats["fuel"].str.lower() == key[3])
@@ -930,9 +914,10 @@ def render_detail(ad_id):
         ]
         if not match.empty:
             fine_basis = True
-            band_lo = km_band(mileage)
+            band_lo = deal_engine.km_band(int(mileage))
             mileage_lo = band_lo
-            mileage_hi = KM_BANDS[0] if band_lo == 0 else (KM_BANDS[1] if band_lo == KM_BANDS[0] else None)
+            mileage_hi = (config.KM_BANDS[0] if band_lo == 0
+                          else (config.KM_BANDS[1] if band_lo == config.KM_BANDS[0] else None))
     comps = load_comps(
         d["brand"], d["model"], bucket, bucket + 1,
         fuel=fuel if has_fuel else None,

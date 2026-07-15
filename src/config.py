@@ -4,14 +4,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+# Empty is tolerated at import time so I/O-free consumers (e.g. the dashboard,
+# which gets its creds from st.secrets) can import this module; db.client()
+# fails fast if a DB-touching process starts without them.
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 BUDGET = float(os.getenv("BUDGET", 2000))
-PRICE_CEILING = float(os.getenv("PRICE_CEILING", 6000))
-# Crawl up to this price so market medians aren't truncated at PRICE_CEILING.
+# Crawl up to this price so market medians aren't truncated at BUDGET.
 MARKET_CEILING = float(os.getenv("MARKET_CEILING", 15000))
 MIN_DISCOUNT = float(os.getenv("MIN_DISCOUNT", 0.25))
 MIN_PROFIT = float(os.getenv("MIN_PROFIT", 300))

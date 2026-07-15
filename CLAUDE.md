@@ -50,11 +50,14 @@ Pipeline, run end-to-end by `src/crawler.py::run()` on every invocation:
    2) * 2` bucketing or lookups silently miss.
 4. **`src/notify.py`** — formats and sends the Telegram message (HTML parse mode) for each new deal.
 5. **`dashboard/app.py`** — read-only Streamlit UI querying `deals_view`, `ads`, `market_stats` directly
-   via `st.cache_data`. Independent of the crawler process; reads whatever's currently in Supabase. Secrets
+   via `st.cache_data`. Independent of the crawler process (own Supabase client, reads whatever's currently
+   in Supabase), but imports the pure modules `src.config` / `src.deal_engine` for shared constants and key
+   logic (`RESALE_FACTOR`, `KM_BANDS`, `km_band()`, `fine_key()`, `ACTIVE_WINDOW_DAYS`) so they can't drift
+   from the crawler's. Secrets
    resolved via `secret()`, which checks `st.secrets` first (Streamlit Cloud) then falls back to env vars
    (local `.env`).
 
-All tunable thresholds (`BUDGET`, `PRICE_CEILING`, `MIN_DISCOUNT`, `MIN_PROFIT`, `MAX_MILEAGE`,
+All tunable thresholds (`BUDGET`, `MARKET_CEILING`, `MIN_DISCOUNT`, `MIN_PROFIT`, `MAX_MILEAGE`,
 `CATEGORY_ID`, `DEEP_SWEEP`) are env vars loaded once in `src/config.py` — see `.env.example` for the full
 list and defaults.
 
