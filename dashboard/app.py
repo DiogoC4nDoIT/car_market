@@ -458,7 +458,7 @@ def render_deals_tab():
         st.info("No deals yet — the crawler needs a few runs to build market stats.")
         return
 
-    profit_lo, profit_hi = int(deals["est_profit"].min()), int(deals["est_profit"].max())
+    profit_lo, profit_hi = min(0, int(deals["est_profit"].min())), int(deals["est_profit"].max())
     if profit_lo == profit_hi:
         profit_hi += 1
     km_series = deals["mileage"].dropna()
