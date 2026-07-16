@@ -322,6 +322,7 @@ div[data-testid="stCheckbox"] input[type="checkbox"] { accent-color:#1c3d2e; }
   display:flex; align-items:center; justify-content:center;
   font:400 9px 'JetBrains Mono',monospace; color:#a89e83; }
 .stand-card { background:#f2ecdc; border:1px solid #e7dfca; border-radius:11px; padding:16px 18px; }
+.st-key-save_search_card > div { background:#f2ecdc; border-color:#e7dfca; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -553,14 +554,14 @@ def render_deals_tab():
     }
     view = apply_filters(deals[~deals["ad_id"].isin(skipped_ids)], filters)
 
-    with st.container(border=True):
+    with st.container(border=True, key="save_search_card"):
+        st.markdown('<div class="stand-label" style="margin-bottom:10px">SAVE AS FAVOURITE DEAL</div>',
+                    unsafe_allow_html=True)
         sn1, sn2 = st.columns([4, 1])
         search_name = sn1.text_input(
-            "SAVE AS FAVOURITE DEAL", key="new_search_name", label_visibility="visible",
+            "Search name", key="new_search_name", label_visibility="collapsed",
             placeholder="Name this filter combo, e.g. \"Cheap diesel wagons\"",
         )
-        sn2.write("")
-        sn2.write("")
         if sn2.button("💾 Save search", use_container_width=True):
             if search_name.strip():
                 create_saved_search(search_name.strip(), filters)
