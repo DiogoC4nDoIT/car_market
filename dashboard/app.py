@@ -45,6 +45,28 @@ def money(x):
     return f"€{x:,.0f}"
 
 
+def describe_filters(filters):
+    profit_lo, profit_hi = filters.get("profit", (None, None))
+    km_lo, km_hi = filters.get("km", (None, None))
+    year_lo, year_hi = filters.get("year", (None, None))
+    clauses = [
+        f"Profit {money(profit_lo)}–{money(profit_hi)}",
+        f"Mileage {km_lo:,}–{km_hi:,} km",
+        f"Year {year_lo}–{year_hi}",
+    ]
+    if filters.get("brand"):
+        clauses.append(filters["brand"])
+    if filters.get("model"):
+        clauses.append(filters["model"])
+    if filters.get("region"):
+        clauses.append(filters["region"])
+    if filters.get("trust"):
+        clauses.append(f"Trust: {CONF_META[filters['trust']][0]}")
+    if filters.get("active"):
+        clauses.append("Active only")
+    return " · ".join(clauses)
+
+
 def render_bar_list(rows, label_fn, value_fn, fmt_fn, color="linear-gradient(90deg,#1c3d2e,#3f8659)", count_fn=None):
     max_val = max((value_fn(r) for r in rows), default=0)
     for r in rows:
@@ -290,6 +312,7 @@ st.markdown("""
 
 .stApp { background:#efeadd; }
 .stApp, .stApp p, .stApp span, .stApp div, .stApp label { font-family:'Instrument Sans',system-ui,sans-serif; }
+span[data-testid="stIconMaterial"] { font-family:'Material Symbols Rounded' !important; }
 h1, h2, h3 { font-family:'Newsreader',serif !important; color:#22201a; }
 div[data-testid="stMetricValue"] { font-family:'Newsreader',serif; color:#22201a; }
 div[data-testid="stMetricLabel"] { font-family:'JetBrains Mono',monospace; font-size:10px !important;
@@ -630,20 +653,19 @@ def render_favourites_tab():
 
     for _, search in searches.sort_values("created_at").iterrows():
         search_id, name, filters = int(search["id"]), search["name"], search["filters"]
-        with st.container(border=True):
-            h1, h2 = st.columns([5, 1])
-            h1.markdown(f'<div class="stand-row-title">{esc(name)}</div>', unsafe_allow_html=True)
-            if h2.button("🗑 Delete", key=f"del_search_{search_id}", use_container_width=True):
+        view = apply_filters(deals[~deals["ad_id"].isin(skipped_ids)], filters)
+        view = view.sort_values("score", ascending=False)
+        label = f"⭐ {name} — {len(view)} matching deal{'s' if len(view) != 1 else ''}"
+        with st.expander(label, expanded=False):
+            if st.button("🗑 Delete", key=f"del_search_{search_id}"):
                 delete_saved_search(search_id)
                 st.rerun()
 
-            view = apply_filters(deals[~deals["ad_id"].isin(skipped_ids)], filters)
-            view = view.sort_values("score", ascending=False)
+            st.caption(describe_filters(filters))
+            st.write("")
             if view.empty:
                 st.caption("No live deals match this search right now.")
             else:
-                st.caption(f"{len(view)} matching deal{'s' if len(view) != 1 else ''}")
-                st.write("")
                 for _, d in view.iterrows():
                     render_deal_card(d, key_prefix=f"search{search_id}_")
 
