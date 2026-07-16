@@ -461,6 +461,7 @@ def render_deals_tab():
     profit_lo, profit_hi = min(0, int(deals["est_profit"].min())), int(deals["est_profit"].max())
     if profit_lo == profit_hi:
         profit_hi += 1
+    profit_default_lo = max(profit_lo, min(0, profit_hi))
     km_series = deals["mileage"].dropna()
     km_lo, km_hi = (int(km_series.min()), int(km_series.max())) if not km_series.empty else (0, 300_000)
     if km_lo == km_hi:
@@ -488,7 +489,7 @@ def render_deals_tab():
         f1, f2, f3 = st.columns(3)
         min_profit, max_profit = f1.slider(
             "PROFIT (€)", profit_lo, profit_hi,
-            clamp(saved.get("profit", (profit_lo, profit_hi)), profit_lo, profit_hi),
+            clamp(saved.get("profit", (profit_default_lo, profit_hi)), profit_lo, profit_hi),
             step=10, key="deals_filter_profit",
         )
         min_km, max_km = f2.slider(
