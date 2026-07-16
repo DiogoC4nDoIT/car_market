@@ -10,6 +10,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from st_aggrid import AgGrid, GridOptionsBuilder
+from st_aggrid.shared import JsCode
 from supabase import create_client
 
 # dashboard/ isn't a package and Streamlit puts only the script's own dir on
@@ -24,7 +26,6 @@ load_dotenv()
 st.set_page_config(page_title="Stand · OLX Flip Radar", page_icon="🚗", layout="wide")
 
 DEALS_PAGE_SIZE = 20
-ADS_PAGE_SIZE = 200
 
 CONF_META = {
     "alta": ("High", "#2f7d4f"),
@@ -44,11 +45,16 @@ def money(x):
     return f"€{x:,.0f}"
 
 
-def render_bar_list(rows, label_fn, value_fn, fmt_fn, color="linear-gradient(90deg,#1c3d2e,#3f8659)"):
+def render_bar_list(rows, label_fn, value_fn, fmt_fn, color="linear-gradient(90deg,#1c3d2e,#3f8659)", count_fn=None):
     max_val = max((value_fn(r) for r in rows), default=0)
     for r in rows:
         v = value_fn(r)
         pct = v / max_val * 100 if max_val else 0
+        count_html = (
+            f'<span style="width:56px;flex:none;text-align:right;font-size:11px;color:#9a9482">'
+            f'{esc(count_fn(r))}</span>'
+            if count_fn else ""
+        )
         st.markdown(
             f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
             f'<span style="width:220px;flex:none;font-size:12px;color:#5b5647;overflow:hidden;'
@@ -56,9 +62,22 @@ def render_bar_list(rows, label_fn, value_fn, fmt_fn, color="linear-gradient(90d
             f'<div style="flex:1;height:16px;background:#e8dfca;border-radius:4px;overflow:hidden">'
             f'<div style="height:100%;background:{color};width:{pct:.0f}%"></div></div>'
             f'<span style="width:70px;flex:none;text-align:right;font:500 12px \'JetBrains Mono\',monospace">'
-            f'{fmt_fn(v)}</span></div>',
+            f'{fmt_fn(v)}</span>{count_html}</div>',
             unsafe_allow_html=True,
         )
+
+
+def render_filterable_table(df, column_config, key, height=700, paginate=False, page_size=200):
+    """st.dataframe replacement with per-column header filters (ag-Grid)."""
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(filter=True, sortable=True,
+                                 resizable=True, editable=False)
+    for field, cfg in column_config.items():
+        gb.configure_column(field, **cfg)
+    if paginate:
+        gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=page_size)
+    AgGrid(df, gridOptions=gb.build(), height=height, theme="streamlit",
+           fit_columns_on_grid_load=True, key=key, allow_unsafe_jscode=True)
 
 
 def verdict_for(score):
@@ -113,14 +132,14 @@ def sb():
     return create_client(secret("SUPABASE_URL"), secret("SUPABASE_KEY"))
 
 
-def _fetch_paged(q, limit):
+def _fetch_paged(q, limit=None):
     """PostgREST caps a single request at its configured max-rows (commonly 1000)
     regardless of the .limit() we pass, so page via .range() until `limit` is hit
     or the result set is exhausted — otherwise `limit=5000` silently truncates
-    to ~1000."""
+    to ~1000. `limit=None` pages until the result set is exhausted (fetch everything)."""
     rows, offset = [], 0
-    while offset < limit:
-        chunk = min(1000, limit - offset)
+    while limit is None or offset < limit:
+        chunk = 1000 if limit is None else min(1000, limit - offset)
         page = q.range(offset, offset + chunk - 1).execute().data
         rows.extend(page)
         if len(page) < chunk:
@@ -181,9 +200,8 @@ def toggle_flag(ad_id: int, flag: str, currently_set: bool):
 
 
 @st.cache_data(ttl=120)
-def load_ads_page(offset, limit):
-    q = sb().table("ads").select("*").order("first_seen", desc=True)
-    return pd.DataFrame(q.range(offset, offset + limit - 1).execute().data)
+def load_all_ads():
+    return _fetch_paged(sb().table("ads").select("*").order("first_seen", desc=True))
 
 
 @st.cache_data(ttl=120)
@@ -631,20 +649,26 @@ def render_market_tab():
             year_label=display["year_bucket"].astype(int).astype(str) + "–"
                        + (display["year_bucket"].astype(int) + 1).astype(str),
         )
-        st.dataframe(
+        euro_fmt = JsCode("function(p){return p.value==null?'':'€'+Math.round(p.value).toLocaleString();}")
+        days_fmt = JsCode("function(p){return p.value==null?'':Math.round(p.value)+' d';}")
+        render_filterable_table(
             table[["model_label", "year_label", "n", "median_price", "p25", "p75",
                    "active_ads", "median_days_to_sell"]],
-            use_container_width=True, hide_index=True, height=700,
             column_config={
-                "model_label": st.column_config.TextColumn("Model"),
-                "year_label": st.column_config.TextColumn("Year"),
-                "n": st.column_config.NumberColumn("N"),
-                "median_price": st.column_config.NumberColumn("Median", format="€%d"),
-                "p25": st.column_config.NumberColumn("P25", format="€%d"),
-                "p75": st.column_config.NumberColumn("P75", format="€%d"),
-                "active_ads": st.column_config.NumberColumn("Active"),
-                "median_days_to_sell": st.column_config.NumberColumn("Days to sell", format="%d d"),
+                "model_label": dict(header_name="Model"),
+                "year_label": dict(header_name="Year"),
+                "n": dict(header_name="N", type=["numericColumn"], filter="agNumberColumnFilter"),
+                "median_price": dict(header_name="Median", type=["numericColumn"],
+                                      filter="agNumberColumnFilter", valueFormatter=euro_fmt),
+                "p25": dict(header_name="P25", type=["numericColumn"],
+                            filter="agNumberColumnFilter", valueFormatter=euro_fmt),
+                "p75": dict(header_name="P75", type=["numericColumn"],
+                            filter="agNumberColumnFilter", valueFormatter=euro_fmt),
+                "active_ads": dict(header_name="Active", type=["numericColumn"], filter="agNumberColumnFilter"),
+                "median_days_to_sell": dict(header_name="Days to sell", type=["numericColumn"],
+                                             filter="agNumberColumnFilter", valueFormatter=days_fmt),
             },
+            key="market_table",
         )
 
         st.write("")
@@ -654,19 +678,22 @@ def render_market_tab():
                          + chart["year_bucket"].astype(int).astype(str) + "–"
                          + (chart["year_bucket"].astype(int) + 1).astype(str))
         chart = chart.sort_values("median_price", ascending=False)
-        render_bar_list(chart.to_dict("records"), lambda r: r["name"], lambda r: r["median_price"], money)
+        render_bar_list(chart.to_dict("records"), lambda r: r["name"], lambda r: r["median_price"], money,
+                         count_fn=lambda r: f'{int(r["n"])} ads')
 
         st.write("")
         st.markdown("**Fastest-selling models** (shorter bar = quicker flip)")
-        liq_chart = table.dropna(subset=["median_days_to_sell"]).sort_values("median_days_to_sell").head(20).copy()
+        liq_chart = table.dropna(subset=["median_days_to_sell"])
+        liq_chart = liq_chart[liq_chart["sold_n"] >= 3].sort_values("median_days_to_sell").head(20).copy()
         if liq_chart.empty:
-            st.caption("Not enough sold history yet to estimate days-to-sell.")
+            st.caption("Not enough sold history yet to estimate days-to-sell (need ≥3 confirmed sales per model).")
         else:
             liq_chart["name"] = (liq_chart["brand"] + " " + liq_chart["model"] + " · "
                                  + liq_chart["year_bucket"].astype(int).astype(str) + "–"
                                  + (liq_chart["year_bucket"].astype(int) + 1).astype(str))
             render_bar_list(liq_chart.to_dict("records"), lambda r: r["name"], lambda r: r["median_days_to_sell"],
-                             lambda v: f"{v:.0f}d", color="linear-gradient(90deg,#8a6a2c,#c99a3f)")
+                             lambda v: f"{v:.0f}d", color="linear-gradient(90deg,#8a6a2c,#c99a3f)",
+                             count_fn=lambda r: f'{int(r["sold_n"])} sold')
 
     st.write("")
     st.markdown("**Regional & fuel breakdown**")
@@ -737,22 +764,47 @@ def render_market_tab():
 
 
 def render_ads_tab():
-    total_ads = count_rows("ads") or 0
-    if not total_ads:
+    all_ads = load_all_ads()
+    if all_ads.empty:
         st.info("No ads tracked yet.")
         return
 
-    total_pages = max(1, -(-total_ads // ADS_PAGE_SIZE))
-    page = pagination_controls("ads_page", total_pages)
-    page_ads = load_ads_page((page - 1) * ADS_PAGE_SIZE, ADS_PAGE_SIZE)
-
-    st.dataframe(
-        page_ads[["title", "price", "brand", "model", "year", "mileage", "region", "url", "first_seen"]],
-        use_container_width=True, hide_index=True, height=700,
-        column_config={"url": st.column_config.LinkColumn("link")},
+    title_link_renderer = JsCode("""
+        class TitleLinkRenderer {
+            init(params) {
+                this.eGui = document.createElement('span');
+                this.eGui.style.display = 'inline-flex';
+                this.eGui.style.alignItems = 'center';
+                this.eGui.style.gap = '6px';
+                const text = document.createElement('span');
+                text.innerText = params.value || '';
+                this.eGui.appendChild(text);
+                if (params.data && params.data.url) {
+                    const a = document.createElement('a');
+                    a.href = params.data.url;
+                    a.target = '_blank';
+                    a.title = 'Open ad on OLX';
+                    a.innerText = '\\u{1F517}';
+                    a.style.textDecoration = 'none';
+                    a.style.flexShrink = '0';
+                    this.eGui.appendChild(a);
+                }
+            }
+            getGui() { return this.eGui; }
+        }
+    """)
+    render_filterable_table(
+        all_ads[["title", "price", "brand", "model", "year", "mileage", "region", "url", "first_seen"]],
+        column_config={
+            "title": dict(cellRenderer=title_link_renderer, minWidth=260),
+            "price": dict(type=["numericColumn"], filter="agNumberColumnFilter"),
+            "year": dict(type=["numericColumn"], filter="agNumberColumnFilter"),
+            "mileage": dict(type=["numericColumn"], filter="agNumberColumnFilter"),
+            "url": dict(hide=True, filter=False),
+        },
+        key="ads_table",
+        paginate=True,
     )
-    st.write("")
-    pagination_controls("ads_page", total_pages, widget_key="ads_page_bottom")
 
 
 def render_detail(ad_id):
