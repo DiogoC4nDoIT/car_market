@@ -64,6 +64,47 @@ def confidence(stat: dict) -> str:
     return "media"
 
 
+def matches_filters(row: dict, filters: dict) -> bool:
+    """Shared predicate for saved-search ("favourite deal") filters, used both by the
+    crawler (checking fresh deals against saved searches) and the dashboard (rendering
+    a saved search's live results) so the two can't drift. `row` needs est_profit,
+    mileage, year, brand, model, region, confidence, status ('ativo'/'desaparecido').
+    Range filters are (lo, hi) tuples; None means unconstrained, and a row missing the
+    underlying field always passes (same NA-tolerant behavior as the Deals tab)."""
+    profit_lo, profit_hi = filters.get("profit", (None, None))
+    if row.get("est_profit") is not None:
+        if profit_lo is not None and row["est_profit"] < profit_lo:
+            return False
+        if profit_hi is not None and row["est_profit"] > profit_hi:
+            return False
+
+    km_lo, km_hi = filters.get("km", (None, None))
+    if row.get("mileage") is not None:
+        if km_lo is not None and row["mileage"] < km_lo:
+            return False
+        if km_hi is not None and row["mileage"] > km_hi:
+            return False
+
+    year_lo, year_hi = filters.get("year", (None, None))
+    if row.get("year") is not None:
+        if year_lo is not None and row["year"] < year_lo:
+            return False
+        if year_hi is not None and row["year"] > year_hi:
+            return False
+
+    if filters.get("brand") and row.get("brand") != filters["brand"]:
+        return False
+    if filters.get("model") and row.get("model") != filters["model"]:
+        return False
+    if filters.get("region") and row.get("region") != filters["region"]:
+        return False
+    if filters.get("trust") and row.get("confidence") != filters["trust"]:
+        return False
+    if filters.get("active") and row.get("status") != "ativo":
+        return False
+    return True
+
+
 def fingerprint(ad: dict) -> str:
     """Same car re-listed under a new id produces the same fingerprint."""
     return "|".join(str(ad.get(k) or "").lower()

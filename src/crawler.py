@@ -109,6 +109,64 @@ def run():
         if notify.send_telegram(notify.format_deal(deal, ad), ad.get("photo_url")):
             db.mark_notified(deal["ad_id"])
 
+    notify_favourite_price_changes(history, prev_prices, ads_by_id)
+    notify_saved_search_matches(new_deals, ads_by_id)
+
+
+def notify_favourite_price_changes(history: list[dict], prev_prices: dict, ads_by_id: dict):
+    """`history` (from price_history_rows) has one row per genuine price change this
+    run plus one per first sighting — only alert on the former, and only for ads the
+    user has starred as favourite."""
+    fav_ids = db.favourite_ad_ids()
+    if not fav_ids:
+        return
+    for row in history:
+        ad_id = row["ad_id"]
+        old_price = prev_prices.get(ad_id)
+        if old_price is None or ad_id not in fav_ids:
+            continue
+        ad = ads_by_id[ad_id]
+        notify.send_telegram(
+            notify.format_price_change(ad, float(old_price), float(row["price"])),
+            ad.get("photo_url"),
+        )
+
+
+def _filter_row(ad: dict, deal: dict) -> dict:
+    status = "desaparecido" if ad.get("url_status") in ("sold", "removed") else "ativo"
+    return {
+        "est_profit": deal["est_profit"], "mileage": ad.get("mileage"), "year": ad.get("year"),
+        "brand": ad.get("brand"), "model": ad.get("model"), "region": ad.get("region"),
+        "confidence": deal.get("confidence"), "status": status,
+    }
+
+
+def notify_saved_search_matches(new_deals: list[dict], ads_by_id: dict):
+    """A saved search's filters are a refinement of the deal criteria already applied
+    by deal_engine.evaluate(), so it can only start matching an ad the moment that ad
+    becomes a deal — checking just this run's new_deals (not the whole deals table) is
+    sufficient."""
+    searches = db.saved_searches()
+    if not searches or not new_deals:
+        return
+    for search in searches:
+        matched = [d for d in new_deals
+                   if deal_engine.matches_filters(_filter_row(ads_by_id[d["ad_id"]], d), search["filters"])]
+        if not matched:
+            continue
+        already = db.existing_search_match_ad_ids(search["id"])
+        new_rows = []
+        for deal in matched:
+            ad_id = deal["ad_id"]
+            if ad_id in already:
+                continue
+            ad = ads_by_id[ad_id]
+            notify.send_telegram(
+                notify.format_new_match(ad, deal, search["name"]), ad.get("photo_url"),
+            )
+            new_rows.append({"search_id": search["id"], "ad_id": ad_id})
+        db.insert_search_matches(new_rows)
+
 
 if __name__ == "__main__":
     run()

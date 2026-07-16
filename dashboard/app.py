@@ -199,6 +199,26 @@ def toggle_flag(ad_id: int, flag: str, currently_set: bool):
     (clear_flag if currently_set else set_flag)(ad_id, flag)
 
 
+def create_saved_search(name: str, filters: dict):
+    sb().table("saved_searches").insert({"name": name, "filters": filters}).execute()
+    st.cache_data.clear()
+
+
+def delete_saved_search(search_id: int):
+    sb().table("saved_searches").delete().eq("id", int(search_id)).execute()
+    st.cache_data.clear()
+
+
+def apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
+    """Applies a saved-search filter dict to a deals-shaped dataframe using the same
+    predicate the crawler uses (deal_engine.matches_filters) before sending a "new
+    favourite deal" Telegram alert, so the two can never disagree on what matches."""
+    if df.empty:
+        return df
+    mask = df.apply(lambda r: deal_engine.matches_filters(r.to_dict(), filters), axis=1)
+    return df[mask]
+
+
 @st.cache_data(ttl=120)
 def load_all_ads():
     return _fetch_paged(sb().table("ads").select("*").order("first_seen", desc=True))
@@ -316,6 +336,7 @@ fine_stats = load("market_stats_fine")
 fuel_stats = load("market_stats_fuel")
 liq = load("market_liquidity")
 flags = load("ad_flags")
+searches = load("saved_searches")
 
 if not flags.empty:
     skipped_ids = set(flags.loc[flags["flag"] == "skipped", "ad_id"].astype(int))
@@ -383,7 +404,7 @@ for col, (key, label) in zip(tab_cols, TABS):
                 st.rerun()
 
 
-def render_deal_card(d):
+def render_deal_card(d, key_prefix=""):
     verdict, vbg, vcolor = verdict_for(d["display_score"])
     conf_label, conf_color = CONF_META.get(d["confidence"], ("—", "#a09a84"))
     with st.container(border=True):
@@ -442,13 +463,13 @@ def render_deal_card(d):
         with c5:
             ad_id = int(d["ad_id"])
             is_fav = ad_id in fav_ids
-            if st.button("Open", key=f"open_{ad_id}", use_container_width=True):
+            if st.button("Open", key=f"{key_prefix}open_{ad_id}", use_container_width=True):
                 st.session_state.open_id = ad_id
                 st.rerun()
-            if st.button("★ Fav" if is_fav else "☆ Fav", key=f"fav_{ad_id}", use_container_width=True):
+            if st.button("★ Fav" if is_fav else "☆ Fav", key=f"{key_prefix}fav_{ad_id}", use_container_width=True):
                 toggle_flag(ad_id, "favourite", is_fav)
                 st.rerun()
-            if st.button("Skip", key=f"skip_{ad_id}", use_container_width=True):
+            if st.button("Skip", key=f"{key_prefix}skip_{ad_id}", use_container_width=True):
                 set_flag(ad_id, "skipped")
                 st.rerun()
 
@@ -502,35 +523,51 @@ def render_deals_tab():
             clamp(saved.get("year", (year_lo, year_hi)), year_lo, year_hi),
             key="deals_filter_year",
         )
-        f4, f5, f6, f7 = st.columns(4)
+        f4, f5, f6, f7, f8 = st.columns([1.3, 1.3, 1.1, 1, 1.1])
         brand_opts = ["All brands"] + sorted(deals["brand"].dropna().unique())
         brand = f4.selectbox("BRAND", brand_opts, index=restore_index(brand_opts, saved.get("brand")),
                               key="deals_filter_brand")
+        model_opts = ["All models"] + sorted(deals["model"].dropna().unique())
+        model = f5.selectbox("MODEL", model_opts, index=restore_index(model_opts, saved.get("model")),
+                              key="deals_filter_model")
         region_opts = ["All regions"] + sorted(deals["region"].dropna().unique())
-        region = f5.selectbox("REGION", region_opts, index=restore_index(region_opts, saved.get("region")),
+        region = f6.selectbox("REGION", region_opts, index=restore_index(region_opts, saved.get("region")),
                                key="deals_filter_region")
         trust_opts = ["All levels", "alta", "media", "baixa"]
-        conf = f6.selectbox("TRUST", trust_opts, index=restore_index(trust_opts, saved.get("trust")),
+        conf = f7.selectbox("TRUST", trust_opts, index=restore_index(trust_opts, saved.get("trust")),
                              format_func=lambda c: c if c == "All levels" else CONF_META[c][0],
                              key="deals_filter_trust")
-        only_active = f7.checkbox("Active listings only", value=saved.get("active", True),
+        only_active = f8.checkbox("Active only", value=saved.get("active", True),
                                    key="deals_filter_active")
 
     saved.update(profit=(min_profit, max_profit), km=(min_km, max_km), year=(min_year, max_year),
-                 brand=brand, region=region, trust=conf, active=only_active)
+                 brand=brand, model=model, region=region, trust=conf, active=only_active)
 
-    view = deals[~deals["ad_id"].isin(skipped_ids)]
-    view = view[(view["est_profit"] >= min_profit) & (view["est_profit"] <= max_profit)]
-    view = view[view["mileage"].isna() | view["mileage"].between(min_km, max_km)]
-    view = view[view["year"].isna() | view["year"].between(min_year, max_year)]
-    if brand != "All brands":
-        view = view[view["brand"] == brand]
-    if region != "All regions":
-        view = view[view["region"] == region]
-    if conf != "All levels":
-        view = view[view["confidence"] == conf]
-    if only_active and "status" in view:
-        view = view[view["status"] == "ativo"]
+    filters = {
+        "profit": (min_profit, max_profit), "km": (min_km, max_km), "year": (min_year, max_year),
+        "brand": None if brand == "All brands" else brand,
+        "model": None if model == "All models" else model,
+        "region": None if region == "All regions" else region,
+        "trust": None if conf == "All levels" else conf,
+        "active": only_active,
+    }
+    view = apply_filters(deals[~deals["ad_id"].isin(skipped_ids)], filters)
+
+    with st.container(border=True):
+        sn1, sn2 = st.columns([4, 1])
+        search_name = sn1.text_input(
+            "SAVE AS FAVOURITE DEAL", key="new_search_name", label_visibility="visible",
+            placeholder="Name this filter combo, e.g. \"Cheap diesel wagons\"",
+        )
+        sn2.write("")
+        sn2.write("")
+        if sn2.button("💾 Save search", use_container_width=True):
+            if search_name.strip():
+                create_saved_search(search_name.strip(), filters)
+                st.success(f"Saved “{search_name.strip()}” to Favourites → Favourite deals.")
+                st.rerun()
+            else:
+                st.warning("Give the search a name first.")
 
     with st.container(border=True):
         s1, s2, s3, s4 = st.columns([1, 1, 1, 1])
@@ -560,14 +597,47 @@ def render_deals_tab():
 
 
 def render_favourites_tab():
-    if not fav_ids:
-        st.info("No favourites yet — tap ☆ Fav on a deal to save it here.")
+    if not fav_ids and searches.empty:
+        st.info("No favourites yet — tap ☆ Fav on a deal to save it, or save a filter combo "
+                 "from the Deals tab as a favourite deal.")
         return
-    view = deals[deals["ad_id"].isin(fav_ids)].sort_values("score", ascending=False)
-    st.caption(f"{len(view)} favourited")
+
+    st.markdown("**★ Favourite ads**")
+    if not fav_ids:
+        st.caption("No starred ads yet — tap ☆ Fav on a deal card to pin it here.")
+    else:
+        view = deals[deals["ad_id"].isin(fav_ids)].sort_values("score", ascending=False)
+        st.caption(f"{len(view)} favourited")
+        for _, d in view.iterrows():
+            render_deal_card(d, key_prefix="favad_")
+
     st.write("")
-    for _, d in view.iterrows():
-        render_deal_card(d)
+    st.markdown("**⭐ Favourite deals**")
+    st.caption("Saved filter combos from the Deals tab. New matches and price changes on "
+               "favourite ads are also sent to Telegram.")
+    if searches.empty:
+        st.caption("No favourite deals saved yet — set filters on the Deals tab and use "
+                   "\"Save as favourite deal\".")
+        return
+
+    for _, search in searches.sort_values("created_at").iterrows():
+        search_id, name, filters = int(search["id"]), search["name"], search["filters"]
+        with st.container(border=True):
+            h1, h2 = st.columns([5, 1])
+            h1.markdown(f'<div class="stand-row-title">{esc(name)}</div>', unsafe_allow_html=True)
+            if h2.button("🗑 Delete", key=f"del_search_{search_id}", use_container_width=True):
+                delete_saved_search(search_id)
+                st.rerun()
+
+            view = apply_filters(deals[~deals["ad_id"].isin(skipped_ids)], filters)
+            view = view.sort_values("score", ascending=False)
+            if view.empty:
+                st.caption("No live deals match this search right now.")
+            else:
+                st.caption(f"{len(view)} matching deal{'s' if len(view) != 1 else ''}")
+                st.write("")
+                for _, d in view.iterrows():
+                    render_deal_card(d, key_prefix=f"search{search_id}_")
 
 
 def render_market_tab():

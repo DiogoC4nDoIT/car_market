@@ -184,6 +184,34 @@ def update_url_status(rows: list[dict]):
             _warn_if_no_rows(res, f"ads.url_status={status} ({len(chunk)} ids)")
 
 
+def favourite_ad_ids() -> set[int]:
+    res = client().table("ad_flags").select("ad_id").eq("flag", "favourite").execute()
+    return {r["ad_id"] for r in res.data}
+
+
+def saved_searches() -> list[dict]:
+    return client().table("saved_searches").select("*").order("created_at").execute().data
+
+
+def create_saved_search(name: str, filters: dict):
+    client().table("saved_searches").insert({"name": name, "filters": filters}).execute()
+
+
+def delete_saved_search(search_id: int):
+    client().table("saved_searches").delete().eq("id", search_id).execute()
+
+
+def existing_search_match_ad_ids(search_id: int) -> set[int]:
+    res = (client().table("saved_search_matches").select("ad_id")
+           .eq("search_id", search_id).execute())
+    return {r["ad_id"] for r in res.data}
+
+
+def insert_search_matches(rows: list[dict]):
+    for chunk in _chunks(rows):
+        client().table("saved_search_matches").insert(chunk).execute()
+
+
 def start_crawl_run(mode: str) -> int | None:
     res = client().table("crawl_runs").insert({"mode": mode}).execute()
     return res.data[0]["id"] if res.data else None

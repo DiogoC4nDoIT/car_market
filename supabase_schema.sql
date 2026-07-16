@@ -88,6 +88,23 @@ create table if not exists price_history (
   primary key (ad_id, seen_at)
 );
 
+-- Named saved filter criteria ("favourite deals"). Single-user app, no RLS,
+-- same as ad_flags — written directly by the dashboard's anon key.
+create table if not exists saved_searches (
+  id         bigserial primary key,
+  name       text not null,
+  filters    jsonb not null,   -- {profit:[lo,hi], km:[lo,hi], year:[lo,hi], brand, model, region, trust, active}
+  created_at timestamptz not null default now()
+);
+
+-- Dedup for the "new match" Telegram alert: one row per (search, ad) ever notified.
+create table if not exists saved_search_matches (
+  search_id   bigint not null references saved_searches(id) on delete cascade,
+  ad_id       bigint not null references ads(id),
+  notified_at timestamptz not null default now(),
+  primary key (search_id, ad_id)
+);
+
 -- One row per crawler run (dashboard health indicator).
 create table if not exists crawl_runs (
   id           bigserial primary key,
