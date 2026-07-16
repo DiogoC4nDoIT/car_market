@@ -408,6 +408,7 @@ for col, (key, label) in zip(tab_cols, TABS):
             if st.button(label, key=f"tab_{key}", use_container_width=True):
                 st.session_state.active_tab = key
                 st.session_state.open_id = None
+                st.query_params.pop("ad", None)
                 st.rerun()
 
 
@@ -889,12 +890,14 @@ def render_detail(ad_id):
     row = deals[deals["ad_id"] == ad_id]
     if row.empty:
         st.session_state.open_id = None
+        st.query_params.pop("ad", None)
         st.rerun()
         return
     d = row.iloc[0]
 
     if st.button("← Back to deals"):
         st.session_state.open_id = None
+        st.query_params.pop("ad", None)
         st.rerun()
 
     verdict, vbg, vcolor = verdict_for(d["display_score"])
@@ -1021,6 +1024,7 @@ def render_detail(ad_id):
         if st.button("Skip", key=f"skip_detail_{ad_id}", use_container_width=True):
             set_flag(ad_id, "skipped")
             st.session_state.open_id = None
+            st.query_params.pop("ad", None)
             st.rerun()
 
     st.write("")

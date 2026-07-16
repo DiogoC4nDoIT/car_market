@@ -77,23 +77,6 @@ def _links(ad: dict) -> str:
     return "\n".join(lines)
 
 
-def format_deal(deal: dict, ad: dict) -> str:
-    conf = deal.get("confidence") or "?"
-    return (
-        f"🚗 <b>Possible deal!</b>\n"
-        f"<b>{ad.get('title')}</b>\n"
-        f"💶 Price: <b>€{deal['price']:.0f}</b> "
-        f"(market median: €{deal['median_price']:.0f})\n"
-        f"📉 Discount: {deal['discount'] * 100:.0f}%  |  "
-        f"💰 Est. profit: ~€{deal['est_profit']:.0f}\n"
-        f"{CONF_EMOJI.get(conf, '⚪')} Confidence: {CONF_LABEL.get(conf, conf)} "
-        f"({deal.get('n', '?')} comparables)\n"
-        f"📅 {ad.get('year')}  |  🛣 {ad.get('mileage') or '?'} km  |  "
-        f"⛽ {ad.get('fuel') or '?'}  |  📍 {ad.get('region') or '?'}\n"
-        f"{_links(ad)}"
-    )
-
-
 def format_price_change(ad: dict, old_price: float, new_price: float) -> str:
     arrow = "📉" if new_price < old_price else "📈"
     delta = new_price - old_price

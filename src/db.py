@@ -105,11 +105,6 @@ def insert_deals(deals: list[dict]):
         client().table("deals").upsert(deals, on_conflict="ad_id").execute()
 
 
-def mark_notified(ad_id: int):
-    res = client().table("deals").update({"notified": True}).eq("ad_id", ad_id).execute()
-    _warn_if_no_rows(res, f"deals.notified ad_id={ad_id}")
-
-
 def update_deal_pricing(rows: list[dict]):
     """Plain per-row UPDATE of recomputed pricing fields only — leaves
     notified/created_at/fingerprint untouched, unlike insert_deals()'s upsert.
@@ -187,6 +182,10 @@ def update_url_status(rows: list[dict]):
 def favourite_ad_ids() -> set[int]:
     res = client().table("ad_flags").select("ad_id").eq("flag", "favourite").execute()
     return {r["ad_id"] for r in res.data}
+
+
+def set_favourite(ad_id: int):
+    client().table("ad_flags").upsert({"ad_id": ad_id, "flag": "favourite"}).execute()
 
 
 def saved_searches() -> list[dict]:

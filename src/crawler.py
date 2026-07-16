@@ -104,11 +104,6 @@ def run():
     db.finish_crawl_run(run_id, len(ads), len(new_deals))
 
     ads_by_id = {a["id"]: a for a in ads}
-    for deal in sorted(new_deals, key=lambda d: -d["score"]):
-        ad = ads_by_id[deal["ad_id"]]
-        if notify.send_telegram(notify.format_deal(deal, ad), ad.get("photo_url")):
-            db.mark_notified(deal["ad_id"])
-
     notify_favourite_price_changes(history, prev_prices, ads_by_id)
     notify_saved_search_matches(new_deals, ads_by_id)
 
@@ -164,6 +159,9 @@ def notify_saved_search_matches(new_deals: list[dict], ads_by_id: dict):
             notify.send_telegram(
                 notify.format_new_match(ad, deal, search["name"]), ad.get("photo_url"),
             )
+            # Matching a saved search makes an ad a favourite too, so price-drop
+            # alerts (notify_favourite_price_changes) start tracking it going forward.
+            db.set_favourite(ad_id)
             new_rows.append({"search_id": search["id"], "ad_id": ad_id})
         db.insert_search_matches(new_rows)
 
