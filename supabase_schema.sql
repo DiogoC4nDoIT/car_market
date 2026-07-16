@@ -197,6 +197,8 @@ select
   year_bucket,
   count(*) filter (where sold_at is null and last_seen > now() - interval '8 days')::int
     as active_ads,
+  count(*) filter (where sold_at is not null and olx_created_at is not null
+            and sold_at > olx_created_at)::int as sold_n,
   percentile_cont(0.5) within group (
     order by extract(epoch from (sold_at - olx_created_at)) / 86400
   ) filter (where sold_at is not null and olx_created_at is not null
