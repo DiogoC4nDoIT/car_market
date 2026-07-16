@@ -8,6 +8,7 @@ from . import config
 log = logging.getLogger(__name__)
 
 CONF_EMOJI = {"alta": "🟢", "media": "🟡", "baixa": "🔴"}
+CONF_LABEL = {"alta": "High", "media": "Medium", "baixa": "Low"}
 
 
 def _post(method: str, payload: dict, retries: int = 3) -> bool:
@@ -66,20 +67,30 @@ def send_telegram(text: str, photo_url: str | None = None) -> bool:
     })
 
 
+def _links(ad: dict) -> str:
+    """Two lines linking out to the ad: our own dashboard detail page (only when
+    DASHBOARD_URL is configured) and the source OLX listing."""
+    lines = []
+    if config.DASHBOARD_URL:
+        lines.append(f"🔗 View on Stand: {config.DASHBOARD_URL}/?ad={ad.get('id')}")
+    lines.append(f"🔗 View on OLX: {ad.get('url')}")
+    return "\n".join(lines)
+
+
 def format_deal(deal: dict, ad: dict) -> str:
     conf = deal.get("confidence") or "?"
     return (
-        f"🚗 <b>Possível negócio!</b>\n"
+        f"🚗 <b>Possible deal!</b>\n"
         f"<b>{ad.get('title')}</b>\n"
-        f"💶 Preço: <b>{deal['price']:.0f} €</b> "
-        f"(mediana do mercado: {deal['median_price']:.0f} €)\n"
-        f"📉 Desconto: {deal['discount'] * 100:.0f}%  |  "
-        f"💰 Lucro estimado: ~{deal['est_profit']:.0f} €\n"
-        f"{CONF_EMOJI.get(conf, '⚪')} Confiança: {conf} "
-        f"({deal.get('n', '?')} comparáveis)\n"
+        f"💶 Price: <b>€{deal['price']:.0f}</b> "
+        f"(market median: €{deal['median_price']:.0f})\n"
+        f"📉 Discount: {deal['discount'] * 100:.0f}%  |  "
+        f"💰 Est. profit: ~€{deal['est_profit']:.0f}\n"
+        f"{CONF_EMOJI.get(conf, '⚪')} Confidence: {CONF_LABEL.get(conf, conf)} "
+        f"({deal.get('n', '?')} comparables)\n"
         f"📅 {ad.get('year')}  |  🛣 {ad.get('mileage') or '?'} km  |  "
         f"⛽ {ad.get('fuel') or '?'}  |  📍 {ad.get('region') or '?'}\n"
-        f"🔗 {ad.get('url')}"
+        f"{_links(ad)}"
     )
 
 
@@ -87,27 +98,27 @@ def format_price_change(ad: dict, old_price: float, new_price: float) -> str:
     arrow = "📉" if new_price < old_price else "📈"
     delta = new_price - old_price
     return (
-        f"{arrow} <b>Alteração de preço num favorito</b>\n"
+        f"{arrow} <b>Price change on a favourite</b>\n"
         f"<b>{ad.get('title')}</b>\n"
-        f"💶 {old_price:.0f} € → <b>{new_price:.0f} €</b> "
-        f"({'+' if delta > 0 else ''}{delta:.0f} €)\n"
+        f"💶 €{old_price:.0f} → <b>€{new_price:.0f}</b> "
+        f"({'+' if delta > 0 else ''}€{delta:.0f})\n"
         f"📅 {ad.get('year')}  |  🛣 {ad.get('mileage') or '?'} km  |  📍 {ad.get('region') or '?'}\n"
-        f"🔗 {ad.get('url')}"
+        f"{_links(ad)}"
     )
 
 
 def format_new_match(ad: dict, deal: dict, search_name: str) -> str:
     conf = deal.get("confidence") or "?"
     return (
-        f"⭐ <b>Novo negócio na pesquisa favorita \"{search_name}\"</b>\n"
+        f"⭐ <b>New deal on favourite search \"{search_name}\"</b>\n"
         f"<b>{ad.get('title')}</b>\n"
-        f"💶 Preço: <b>{deal['price']:.0f} €</b> "
-        f"(mediana do mercado: {deal['median_price']:.0f} €)\n"
-        f"📉 Desconto: {deal['discount'] * 100:.0f}%  |  "
-        f"💰 Lucro estimado: ~{deal['est_profit']:.0f} €\n"
-        f"{CONF_EMOJI.get(conf, '⚪')} Confiança: {conf} "
-        f"({deal.get('n', '?')} comparáveis)\n"
+        f"💶 Price: <b>€{deal['price']:.0f}</b> "
+        f"(market median: €{deal['median_price']:.0f})\n"
+        f"📉 Discount: {deal['discount'] * 100:.0f}%  |  "
+        f"💰 Est. profit: ~€{deal['est_profit']:.0f}\n"
+        f"{CONF_EMOJI.get(conf, '⚪')} Confidence: {CONF_LABEL.get(conf, conf)} "
+        f"({deal.get('n', '?')} comparables)\n"
         f"📅 {ad.get('year')}  |  🛣 {ad.get('mileage') or '?'} km  |  "
         f"⛽ {ad.get('fuel') or '?'}  |  📍 {ad.get('region') or '?'}\n"
-        f"🔗 {ad.get('url')}"
+        f"{_links(ad)}"
     )

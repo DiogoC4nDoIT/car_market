@@ -329,6 +329,12 @@ div[data-testid="stCheckbox"] input[type="checkbox"] { accent-color:#1c3d2e; }
 st.session_state.setdefault("active_tab", "deals")
 st.session_state.setdefault("open_id", None)
 
+if st.session_state.open_id is None and "ad" in st.query_params:
+    try:
+        st.session_state.open_id = int(st.query_params["ad"])
+    except (TypeError, ValueError):
+        pass
+
 deals = load("deals_view", order="created_at")
 ads = load("ads", order="first_seen", limit=5000)
 runs = load("crawl_runs", order="started_at", limit=1)

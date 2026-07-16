@@ -11,6 +11,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# Streamlit dashboard base URL (no trailing slash), used to build "view on Stand"
+# deep links in Telegram alerts. Blank omits that link.
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").rstrip("/")
 
 BUDGET = float(os.getenv("BUDGET", 2000))
 # Crawl up to this price so market medians aren't truncated at BUDGET.
