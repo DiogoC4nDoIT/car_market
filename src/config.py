@@ -11,6 +11,15 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+# Residential/rotating proxy for OLX requests, format http://user:pass@host:port.
+# Blank runs requests direct (fine for local/residential IPs).
+PROXY_URL = os.getenv("PROXY_URL", "")
+# Route OLX requests through headless Chrome (Playwright) instead of plain
+# requests. Required on cloud/datacenter IPs (GitHub Actions): OLX's WAF 403s
+# non-browser clients there but passes a real browser fingerprint — see the
+# transport note in olx_api.py. Needs `pip install playwright && playwright
+# install chromium`; the workflows set this.
+OLX_BROWSER = os.getenv("OLX_BROWSER", "0") == "1"
 # Streamlit dashboard base URL (no trailing slash), used to build "view on Stand"
 # deep links in Telegram alerts. Blank omits that link.
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "").rstrip("/")

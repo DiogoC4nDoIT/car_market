@@ -8,7 +8,9 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The browser transport serializes requests (single Chrome page), so a
+    # full batch takes longer than the old concurrent direct fetches.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,8 +18,15 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
+      # OLX's WAF blocks plain HTTP clients from datacenter IPs; requests are
+      # routed through headless Chrome instead (OLX_BROWSER=1).
+      - run: |
+          pip install playwright
+          playwright install --with-deps chromium
       - name: Verify ad URLs
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          OLX_BROWSER: "1"
         run: python -m src.url_checker

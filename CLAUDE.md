@@ -30,13 +30,16 @@ logic happen there, not in Python.
 
 Pipeline, run end-to-end by `src/crawler.py::run()` on every invocation:
 
-1. **`src/olx_api.py`** — talks to OLX's public JSON API directly (`olx.pt/api/v1/offers/`), no browser
-   rendering. `parse_offer()` flattens OLX's raw offer JSON into the `ads` row shape. OLX's API caps
-   `offset` at 1000, so `fetch_deep_sweep()` walks fixed price buckets (`SWEEP_BUCKETS`) to cover the full
-   catalog for the weekly deep sweep; the incremental crawl just pages newest-first until it hits ads
-   already in the DB. OLX's category params never expose brand directly — `guess_brand()` regex-matches it
-   out of the free-text title instead. If this file needs changing, it's almost always because OLX changed
-   their API/HTML.
+1. **`src/olx_api.py`** — talks to OLX's public JSON API (`olx.pt/api/v1/offers/`). Two transports behind
+   one interface: plain `requests` by default, or headless Chrome (Playwright, `OLX_BROWSER=1`) when
+   running from cloud/datacenter IPs — OLX's WAF 403s non-browser clients from those (verified 2026-08-24:
+   curl blocked from GitHub Actions/Cloudflare/Tor alike; real Chrome from the same runner passes). The
+   GitHub Actions workflows set `OLX_BROWSER=1` and install Chromium. `parse_offer()` flattens OLX's raw
+   offer JSON into the `ads` row shape. OLX's API caps `offset` at 1000, so `fetch_deep_sweep()` walks
+   fixed price buckets (`SWEEP_BUCKETS`) to cover the full catalog for the weekly deep sweep; the
+   incremental crawl just pages newest-first until it hits ads already in the DB. OLX's category params
+   never expose brand directly — `guess_brand()` regex-matches it out of the free-text title instead. If
+   this file needs changing, it's almost always because OLX changed their API/HTML/WAF.
 2. **`src/db.py`** — thin Supabase wrapper (upsert ads in batches of 500, read market stats paginated in
    chunks of 1000, track which deals were already inserted/notified). All Supabase access goes through
    `client()`, a lazily-initialized singleton.
@@ -49,13 +52,19 @@ Pipeline, run end-to-end by `src/crawler.py::run()` on every invocation:
    an even 2-year bucket) — this key logic must stay identical between Python and the SQL view's `(year /
    2) * 2` bucketing or lookups silently miss.
 4. **`src/notify.py`** — formats and sends the Telegram message (HTML parse mode) for each new deal.
-5. **`dashboard/app.py`** — read-only Streamlit UI querying `deals_view`, `ads`, `market_stats` directly
-   via `st.cache_data`. Independent of the crawler process (own Supabase client, reads whatever's currently
-   in Supabase), but imports the pure modules `src.config` / `src.deal_engine` for shared constants and key
+5. **`dashboard/`** — read-only Streamlit UI querying `deals_view`, `ads`, `market_stats` directly via
+   `st.cache_data`. Independent of the crawler process (own Supabase client, reads whatever's currently in
+   Supabase), but imports the pure modules `src.config` / `src.deal_engine` for shared constants and key
    logic (`RESALE_FACTOR`, `KM_BANDS`, `km_band()`, `fine_key()`, `ACTIVE_WINDOW_DAYS`) so they can't drift
-   from the crawler's. Secrets
-   resolved via `secret()`, which checks `st.secrets` first (Streamlit Cloud) then falls back to env vars
-   (local `.env`).
+   from the crawler's. `app.py` only wires things together (load data, header, tab nav, dispatch); the rest
+   is split by concern: `styles.py` (CSS), `format_utils.py` (pure formatting/labelling helpers, no
+   Streamlit/Supabase calls), `data.py` (all Supabase access and `st.cache_data`-backed queries/mutations —
+   `secret()` resolves secrets via `st.secrets` first, Streamlit Cloud, then env vars for local `.env`),
+   `components.py` (shared widgets: bar charts, the ag-Grid table wrapper, pagination, the deal card,
+   `stat_card()`/`kv_row()` helpers for the detail page's boxed stats), `context.py` (the `Context`
+   dataclass bundling the per-run dataframes so tab modules take an explicit `ctx` argument instead of
+   module-level globals), and `tabs/` (one module per tab — `deals.py`, `favourites.py`, `market.py`,
+   `ads.py`, `detail.py`).
 
 All tunable thresholds (`BUDGET`, `MARKET_CEILING`, `MIN_DISCOUNT`, `MIN_PROFIT`, `MAX_MILEAGE`,
 `CATEGORY_ID`, `DEEP_SWEEP`) are env vars loaded once in `src/config.py` — see `.env.example` for the full
@@ -63,7 +72,7 @@ list and defaults.
 
 ## Deployment
 
-- Crawler: GitHub Actions (`.github/workflows/crawl.yml`), incremental every 30 min, deep sweep weekly
+- Crawler: GitHub Actions (`.github/workflows/crawl.yml`), incremental hourly, deep sweep weekly
   (Sunday 03:00 UTC) via cron, or manually via `workflow_dispatch` with a `deep_sweep` checkbox. Secrets
   (`SUPABASE_URL`, `SUPABASE_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) come from repo Actions secrets.
 - Dashboard: Streamlit Community Cloud, main file `dashboard/app.py`, secrets configured in the Streamlit

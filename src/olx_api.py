@@ -6,11 +6,16 @@ instead of rendering pages with a browser. One request returns 40 ads.
 import json
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlencode
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
+
+from . import config
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +44,58 @@ _session.mount("https://", HTTPAdapter(max_retries=Retry(
     status_forcelist=[500, 502, 503, 504],
     allowed_methods={"GET"},
 )))
+if config.PROXY_URL:
+    _session.proxies.update({"http": config.PROXY_URL, "https": config.PROXY_URL})
+
+# OLX's WAF (AWS CloudFront) blocks non-browser clients from datacenter IPs:
+# plain requests from GitHub Actions runners get 403 regardless of headers,
+# cookies or egress network (Azure, Cloudflare WARP, Tor — all verified blocked
+# 2026-08-24), while a real headless Chrome from the same runner gets 200.
+# OLX_BROWSER=1 therefore routes every request through a Playwright Chromium
+# page: bootstrap loads the Carros page once, then same-origin fetch() calls
+# ride on the browser's TLS/HTTP2 fingerprint, cookies and JS execution.
+# Playwright's sync API is bound to the thread that started it, so all calls
+# are funneled through a single-worker executor (url_checker fans out across
+# a thread pool).
+_JS_FETCH = """async ({url, accept}) => {
+    const res = await fetch(url, {headers: {'Accept': accept}});
+    return {status: res.status, text: await res.text()};
+}"""
+
+
+class _Browser:
+    def __init__(self):
+        self._pool = ThreadPoolExecutor(max_workers=1)
+        self._pool.submit(self._start).result()
+
+    def _start(self):
+        from playwright.sync_api import sync_playwright
+        pw = sync_playwright().start()
+        ctx = pw.chromium.launch(
+            args=["--disable-blink-features=AutomationControlled"],
+        ).new_context(locale="pt-PT", user_agent=HEADERS["User-Agent"])
+        self._page = ctx.new_page()
+        r = self._page.goto(CARROS_PAGE, wait_until="domcontentloaded", timeout=60_000)
+        if r is None or r.status != 200:
+            raise RuntimeError(f"browser bootstrap got HTTP {r.status if r else '?'}")
+        log.info("browser transport ready")
+
+    def fetch(self, url: str, accept: str) -> tuple[int, str]:
+        def go():
+            out = self._page.evaluate(_JS_FETCH, {"url": url, "accept": accept})
+            return out["status"], out["text"]
+        return self._pool.submit(go).result()
+
+
+_browser_instance, _browser_lock = None, threading.Lock()
+
+
+def _browser() -> _Browser:
+    global _browser_instance
+    with _browser_lock:
+        if _browser_instance is None:
+            _browser_instance = _Browser()
+    return _browser_instance
 
 # OLX's "carros" category params never include a brand/marca field (only
 # "modelo") — brand has to be inferred from the free-text title instead.
@@ -68,31 +125,40 @@ def guess_brand(title: str) -> str | None:
 
 
 def _get(params: dict, retries: int = 3) -> dict:
-    err = None
+    err, status = None, None
     for attempt in range(retries):
         try:
-            r = _session.get(BASE, params=params, timeout=30)
-        except requests.RequestException as e:  # session-level retries exhausted
-            r, err = None, e
-            log.warning("OLX API %s (attempt %d)", type(e).__name__, attempt + 1)
-        else:
-            if r.status_code == 200:
-                return r.json()
+            if config.OLX_BROWSER:
+                status, text = _browser().fetch(BASE + "?" + urlencode(params), "application/json")
+                if status == 200:
+                    return json.loads(text)
+            else:
+                r = _session.get(BASE, params=params, timeout=30)
+                status = r.status_code
+                if status == 200:
+                    return r.json()
             err = None
-            log.warning("OLX API %s (attempt %d)", r.status_code, attempt + 1)
+            log.warning("OLX API %s (attempt %d)", status, attempt + 1)
+        except Exception as e:  # session-level retries / browser transport exhausted
+            err = e
+            log.warning("OLX API %s (attempt %d)", type(e).__name__, attempt + 1)
         time.sleep(2 ** attempt * 2)
-    if err is not None:
-        raise err
-    r.raise_for_status()
-    return {}
+    # Normalized to a RequestException either way so callers (resolve_category's
+    # probe) can catch one type regardless of transport.
+    raise requests.HTTPError(
+        f"OLX API failed after {retries} attempts (last status {status})"
+    ) from err
 
 
 def discover_category_id() -> int | None:
     """Find the Carros category id from the category page HTML."""
     try:
-        r = _session.get(CARROS_PAGE, headers={"Accept": "text/html"}, timeout=30)
+        if config.OLX_BROWSER:
+            _, body = _browser().fetch(CARROS_PAGE, "text/html")
+        else:
+            body = _session.get(CARROS_PAGE, headers={"Accept": "text/html"}, timeout=30).text
         for pat in (r'"categoryId":\s*"?(\d+)', r'category_id[=:]"?(\d+)'):
-            m = re.search(pat, r.text)
+            m = re.search(pat, body)
             if m:
                 return int(m.group(1))
     except Exception as e:
@@ -128,19 +194,23 @@ def _ad_state(body: str) -> dict | None:
 def check_offer_status(url: str) -> str:
     """Fetch an ad's own page and classify it: 'active' | 'sold' | 'removed' | 'unknown'."""
     try:
-        r = _session.get(url, headers={"Accept": "text/html"}, timeout=30)
-    except requests.RequestException as e:
+        if config.OLX_BROWSER:
+            code, body = _browser().fetch(url, "text/html")
+        else:
+            r = _session.get(url, headers={"Accept": "text/html"}, timeout=30)
+            code, body = r.status_code, r.text
+    except Exception as e:
         log.info("unknown: request exception (%s) for %s", type(e).__name__, url)
         return "unknown"
-    if r.status_code in (404, 410):
+    if code in (404, 410):
         return "removed"
-    if r.status_code != 200:
-        log.info("unknown: HTTP %d for %s", r.status_code, url)
+    if code != 200:
+        log.info("unknown: HTTP %d for %s", code, url)
         return "unknown"
 
-    ad = _ad_state(r.text)
+    ad = _ad_state(body)
     if ad is None:
-        log.info("unknown: no parsable ad state (body len=%d) for %s", len(r.text), url)
+        log.info("unknown: no parsable ad state (body len=%d) for %s", len(body), url)
         return "unknown"
     status = (ad.get("status") or "").lower()
     if status == "active" and ad.get("isActive"):

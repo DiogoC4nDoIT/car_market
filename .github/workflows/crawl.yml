@@ -23,6 +23,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
+      # OLX's WAF blocks plain HTTP clients from datacenter IPs; the crawler
+      # routes requests through headless Chrome instead (OLX_BROWSER=1).
+      - run: |
+          pip install playwright
+          playwright install --with-deps chromium
       - name: Run crawler
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -30,6 +35,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          OLX_BROWSER: "1"
           DEEP_SWEEP: ${{ (github.event.schedule == '0 3 * * 0' || inputs.deep_sweep) && '1' || '0' }}
         run: |
           if [ "${{ github.event.schedule }}" = "0 8 * * *" ]; then
