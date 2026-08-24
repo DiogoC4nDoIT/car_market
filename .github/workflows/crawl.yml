@@ -2,7 +2,7 @@ name: Crawl OLX.pt
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # incremental crawl every 30 min
+    - cron: "0 * * * *"      # incremental crawl every hour
     - cron: "0 3 * * 0"      # weekly deep sweep (Sunday 03:00 UTC)
     - cron: "0 8 * * *"      # daily Telegram digest (08:00 UTC)
   workflow_dispatch:
