@@ -1,0 +1,24 @@
+name: Test Tor egress
+on: workflow_dispatch
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install and start Tor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tor
+          sudo systemctl start tor
+          sleep 5
+          sudo systemctl status tor --no-pager || true
+
+      - name: IP and OLX check via Tor SOCKS5
+        run: |
+          echo "public IP (via tor):"
+          curl -s --socks5-hostname 127.0.0.1:9050 https://ifconfig.me
+          echo ""
+          echo "OLX API via Tor:"
+          curl -s -o /tmp/body.txt -w "HTTP %{http_code}\n" --socks5-hostname 127.0.0.1:9050 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" "https://www.olx.pt/api/v1/offers/?category_id=378&limit=40&offset=0&sort_by=created_at%3Adesc&currency=EUR" --max-time 30
+          echo "--- body head ---"
+          head -c 300 /tmp/body.txt
