@@ -187,6 +187,12 @@ def render_market_tab(ctx: Context):
         deals_f = deals_f[deals_f["year"].isna() | deals_f["year"].between(yr_lo, yr_hi)]
         deals_f = deals_f[deals_f["price"].between(p_lo, p_hi)]
 
+        # Skipped ads stay in the candidate pool for comparison purposes (near-miss counts,
+        # regional-arbitrage stats below) but must never be surfaced as a suggestion — the user
+        # already dismissed them once.
+        deals_f_all = deals_f
+        deals_f = deals_f[~deals_f["ad_id"].isin(ctx.skipped_ids)]
+
         total_matches = int(len(deals_f))
         if total_matches == 0:
             st.caption("No vetted deals (passing the crawler's budget/discount/profit/mileage bar) "
@@ -218,7 +224,9 @@ def render_market_tab(ctx: Context):
 
                 good_ratings = good_ads.apply(_rating_top, axis=1)
                 good_ids = set(good_ads.loc[good_ratings.isin(["Great deal", "Good deal"]), "id"])
-                near_miss_count = len(good_ids - set(deals_f["ad_id"])) or None
+                # Compare against deals_f_all (skip-inclusive) so a deal the user already skipped
+                # doesn't get double-counted as a "near miss" too — it already cleared the bar.
+                near_miss_count = len(good_ids - set(deals_f_all["ad_id"])) or None
 
             # Regional-arbitrage aside: where the models actually surfaced clear elsewhere, so a
             # region filter doesn't silently hide the cross-region spread the crawler exists to find.
@@ -279,7 +287,8 @@ def render_market_tab(ctx: Context):
                     st.info(brief)
                     st.caption("Real listings referenced above (not AI-generated links):")
                     for _, r in top.iterrows():
-                        st.markdown(f"- **{r['label']}** — [{r['title']}]({r['url']})")
+                        st.markdown(f"- **{r['label']}** — [{r['title']}]({r['url']}) · "
+                                    f"[View in Stand](?ad={int(r['ad_id'])})")
                 else:
                     st.caption("Couldn't generate a brief right now — check GROQ_API_KEY and try again.")
 
