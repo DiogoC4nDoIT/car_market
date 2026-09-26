@@ -61,15 +61,25 @@ div[data-testid="stLinkButton"] a {
    what made the "white" filter row read as odd/off-theme against the rest of
    the page. */
 div[data-baseweb="select"] > div, div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-  background:var(--bg-paper) !important; border-color:var(--input-border) !important;
+  background:var(--bg-paper) !important; border-color:var(--primary-main) !important;
 }
-div[data-testid="stSelectbox"]:hover div[data-baseweb="select"] > div { border-color:var(--input-border-hover) !important; }
+div[data-testid="stSelectbox"]:hover div[data-baseweb="select"] > div,
 div[data-testid="stSelectbox"]:focus-within div[data-baseweb="select"] > div { border-color:var(--primary-main) !important; }
 
-div[data-testid="stNumberInput"] input, div[data-testid="stTextInput"] input {
-  background:var(--bg-paper) !important; border-color:var(--input-border) !important;
+/* Streamlit >=1.62 dropped the BaseWeb select for a react-aria ComboBox — the
+   bordered box is now the input's parent div, unreachable by [data-baseweb]
+   at all, which is why Brand/Model/Region silently lost their border while
+   only the momentarily-focused control (default focus ring) looked outlined. */
+div[data-testid="stSelectbox"] div:has(> input[role="combobox"]) {
+  background:var(--bg-paper) !important; border-color:var(--primary-main) !important;
 }
-div[data-testid="stNumberInput"]:hover input, div[data-testid="stTextInput"]:hover input { border-color:var(--input-border-hover) !important; }
+div[data-testid="stSelectbox"]:hover div:has(> input[role="combobox"]),
+div[data-testid="stSelectbox"]:focus-within div:has(> input[role="combobox"]) { border-color:var(--primary-main) !important; }
+
+div[data-testid="stNumberInput"] input, div[data-testid="stTextInput"] input {
+  background:var(--bg-paper) !important; border-color:var(--primary-main) !important;
+}
+div[data-testid="stNumberInput"]:hover input, div[data-testid="stTextInput"]:hover input,
 div[data-testid="stNumberInput"] input:focus, div[data-testid="stTextInput"] input:focus {
   border-color:var(--primary-main) !important; box-shadow:0 0 0 1px var(--primary-main);
 }
