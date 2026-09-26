@@ -10,11 +10,15 @@ from dashboard.format_utils import CONF_META, esc, fmt_date, money, sold_at, ver
 
 
 def render_bar_list(rows, label_fn, value_fn, fmt_fn,
-                     color="linear-gradient(90deg,var(--success-dark),var(--success-main))", count_fn=None):
+                     color="linear-gradient(90deg,var(--success-dark),var(--success-main))", count_fn=None,
+                     color_fn=None):
+    """color_fn(row) -> css color/gradient overrides `color` per row, for lists where each
+    row is a distinct category (e.g. deal-rating buckets) rather than a homogeneous ranking."""
     max_val = max((value_fn(r) for r in rows), default=0)
     for r in rows:
         v = value_fn(r)
         pct = v / max_val * 100 if max_val else 0
+        row_color = color_fn(r) if color_fn else color
         count_html = (
             f'<span style="width:56px;flex:none;text-align:right;font-size:11px;color:var(--text-disabled)">'
             f'{esc(count_fn(r))}</span>'
@@ -25,7 +29,7 @@ def render_bar_list(rows, label_fn, value_fn, fmt_fn,
             f'<span style="width:220px;flex:none;font-size:12px;color:var(--text-secondary);overflow:hidden;'
             f'text-overflow:ellipsis;white-space:nowrap">{esc(label_fn(r))}</span>'
             f'<div style="flex:1;height:16px;background:var(--grey-300);border-radius:var(--radius);overflow:hidden">'
-            f'<div style="height:100%;background:{color};width:{pct:.0f}%"></div></div>'
+            f'<div style="height:100%;background:{row_color};width:{pct:.0f}%"></div></div>'
             f'<span style="width:70px;flex:none;text-align:right;font:500 12px var(--font-family-monospace)">'
             f'{fmt_fn(v)}</span>{count_html}</div>',
             unsafe_allow_html=True,

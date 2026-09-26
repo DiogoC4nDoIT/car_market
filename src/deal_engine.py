@@ -52,6 +52,25 @@ def build_fuel_index(rows: list[dict]) -> dict:
     }
 
 
+# CarGurus-style classification of an ad's price against its market median, for the
+# Market tab's deal-rating distribution. Order matters: callers rely on this being
+# best-to-worst for display.
+DEAL_RATING_ORDER = ("Great deal", "Good deal", "Fair price", "High price", "Overpriced")
+
+
+def deal_rating(discount: float) -> str:
+    """discount is deal_engine's usual `1 - price/median` (positive = below median)."""
+    if discount >= 0.25:
+        return "Great deal"
+    if discount >= 0.10:
+        return "Good deal"
+    if discount >= -0.10:
+        return "Fair price"
+    if discount >= -0.25:
+        return "High price"
+    return "Overpriced"
+
+
 def confidence(stat: dict) -> str:
     """alta/media/baixa from sample size and price spread (IQR / median)."""
     n = int(stat["n"])

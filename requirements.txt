@@ -4,3 +4,4 @@ python-dotenv>=1.0
 streamlit>=1.36
 streamlit-aggrid>=1.0
 pandas>=2.2
+groq>=0.11        # optional: powers the Market tab's AI brief, free tier at console.groq.com

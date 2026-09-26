@@ -262,6 +262,11 @@ select
     as active_ads,
   count(*) filter (where sold_at is not null and olx_created_at is not null
             and sold_at > olx_created_at)::int as sold_n,
+  -- Windowed sell-through rate (last 60 days), for Market Days Supply — sold_n above is a
+  -- lifetime cumulative count, useless as a rate. Must stay a rolling window, not lifetime.
+  count(*) filter (where sold_at is not null and olx_created_at is not null
+            and sold_at > olx_created_at and sold_at > now() - interval '60 days')::int
+    as sold_n_60d,
   percentile_cont(0.5) within group (
     order by extract(epoch from (sold_at - olx_created_at)) / 86400
   ) filter (where sold_at is not null and olx_created_at is not null
