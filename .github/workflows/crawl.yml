@@ -11,6 +11,10 @@ on:
         description: "Run full price-bucketed sweep"
         type: boolean
         default: false
+      skip_install_deps:
+        description: "TEST ONLY: skip 'playwright install-deps' to check if ubuntu-latest already has the needed libs"
+        type: boolean
+        default: false
 
 jobs:
   crawl:
@@ -39,9 +43,11 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('requirements-crawler.txt') }}
-      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit != 'true'
+      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit != 'true' && !inputs.skip_install_deps
         run: playwright install --with-deps chromium
-      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit == 'true'
+      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit != 'true' && inputs.skip_install_deps
+        run: playwright install chromium
+      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit == 'true' && !inputs.skip_install_deps
         run: playwright install-deps chromium
       - name: Run crawler
         env:
