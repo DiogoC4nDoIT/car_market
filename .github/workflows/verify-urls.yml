@@ -2,7 +2,7 @@ name: Verify OLX ad URLs
 
 on:
   schedule:
-    - cron: "15 */12 * * *"  # re-check a batch of stored ad urls twice a day
+    - cron: "15 */8 * * *"   # re-check a batch of stored ad urls three times a day
   workflow_dispatch:
     inputs:
       delay_seconds:

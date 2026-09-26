@@ -43,15 +43,22 @@ DEEP_SWEEP = os.getenv("DEEP_SWEEP", "0") == "1"
 # How many stored ad URLs to re-check against their live OLX page per url_checker run
 # (on top of the uncapped priority tier — see db.deal_ad_ids), how far back (by
 # first_seen) to bother checking at all, and how fast to check them. OLX rate-limits
-# individual ad-page fetches (confirmed 2026-07-14: 6 workers with no pacing got
-# 403'd on ~85% of requests after the first few hundred); CONCURRENCY + DELAY_SECONDS
-# together cap the aggregate request rate — keep them conservative, verify against
-# real runs before pushing faster. At ~2 req/s this batch clears a multi-thousand-ad
-# backlog within ~2 days at this cadence (every 4h, see verify-urls.yml).
+# individual ad-page fetches: CONCURRENCY + DELAY_SECONDS together cap the aggregate
+# request rate. Recalibrated 2026-09-26 against the *current* browser-routed transport
+# (the 2026-07-14 numbers below were from the old direct-request transport, since
+# replaced): confirmed via real workflow_dispatch runs against production —
+#   2 req/s (conc=2, delay=0.5, the old default): 100% success
+#   4 req/s (conc=3, delay=0.25): 100% success, ~15-20% faster wall-clock
+#   10 req/s (conc=4, delay=0.1): 89% blocked with HTTP 403 within ~1 min
+# The block didn't persist to the next run at a safe rate, but don't push closer to
+# that 4-10 req/s cliff without re-verifying live — see verify-urls.yml's
+# delay_seconds/concurrency workflow_dispatch inputs for probing without touching
+# these defaults. At ~4 req/s this batch clears a multi-thousand-ad backlog within
+# ~2 days at this cadence (every 8h, see verify-urls.yml).
 URL_CHECK_BATCH_SIZE = int(os.getenv("URL_CHECK_BATCH_SIZE", 1500))
 URL_CHECK_LOOKBACK_DAYS = int(os.getenv("URL_CHECK_LOOKBACK_DAYS", 90))
-URL_CHECK_CONCURRENCY = int(_env("URL_CHECK_CONCURRENCY", "2"))
-URL_CHECK_DELAY_SECONDS = float(_env("URL_CHECK_DELAY_SECONDS", "0.5"))
+URL_CHECK_CONCURRENCY = int(_env("URL_CHECK_CONCURRENCY", "3"))
+URL_CHECK_DELAY_SECONDS = float(_env("URL_CHECK_DELAY_SECONDS", "0.25"))
 
 # Resale friction: assume you sell at ~85% of median (haggling, fees, time)
 RESALE_FACTOR = 0.85
