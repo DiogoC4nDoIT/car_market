@@ -9,7 +9,7 @@ from dashboard import ai_brief
 from dashboard.components import render_bar_list, render_filterable_table
 from dashboard.context import Context
 from dashboard.data import count_ads, load_price_history
-from dashboard.format_utils import comp_sold_info, money
+from dashboard.format_utils import CONF_META, money
 
 RATING_COLORS = {
     "Great deal": "linear-gradient(90deg,var(--success-dark),var(--success-main))",
@@ -18,6 +18,17 @@ RATING_COLORS = {
     "High price": "linear-gradient(90deg,var(--warning-dark),var(--warning-main))",
     "Overpriced": "linear-gradient(90deg,var(--error-dark),var(--error-main))",
 }
+
+
+def _km_band_label(mileage) -> str:
+    """Human mileage-band phrasing matching config.KM_BANDS / deal_engine.km_band() —
+    lets the AI brief say 'under 150k km' instead of a bare, uncontextualized number."""
+    lo, hi = config.KM_BANDS
+    if mileage < lo:
+        return f"under {lo // 1000}k km"
+    if mileage < hi:
+        return f"{lo // 1000}k–{hi // 1000}k km"
+    return f"over {hi // 1000}k km"
 
 
 def _price_cut_rollup(ads: pd.DataFrame) -> pd.DataFrame:
@@ -151,6 +162,126 @@ def render_market_tab(ctx: Context):
     if tracked_ads > len(ads):
         st.caption(f"Regional/fuel breakdown and deep-dive below are based on a sample "
                    f"of the {len(ads):,} most recently added ads, not all {tracked_ads:,}.")
+
+    st.write("")
+    st.markdown("**AI good-deal brief** (optional, free)")
+    if not ai_brief.available():
+        st.caption("Set GROQ_API_KEY (free tier at console.groq.com) in secrets/.env to turn on a "
+                   "short AI summary of the best deals matching your filters above — every other "
+                   "Market tab feature works without it.")
+    elif ctx.deals.empty:
+        st.caption("No deals tracked yet.")
+    else:
+        # Driven entirely by the filter bar above (brand/region/fuel/year/price) — NOT by the
+        # Model deep-dive's own selectors further down, which scope a different, single-model
+        # set of charts. `ctx.deals` is deal_engine.evaluate()'s own output (already vetted on
+        # budget/discount/profit/mileage/blacklist together — the same bar that drives the Deals
+        # tab and Telegram alerts), filtered active-only so nothing delisted gets recommended.
+        deals_f = ctx.deals[ctx.deals["status"] == "ativo"].copy()
+        if brand != "All brands":
+            deals_f = deals_f[deals_f["brand"] == brand]
+        if region != "All regions":
+            deals_f = deals_f[deals_f["region"] == region]
+        if fuel != "All fuels":
+            deals_f = deals_f[deals_f["fuel"] == fuel]
+        deals_f = deals_f[deals_f["year"].isna() | deals_f["year"].between(yr_lo, yr_hi)]
+        deals_f = deals_f[deals_f["price"].between(p_lo, p_hi)]
+
+        total_matches = int(len(deals_f))
+        if total_matches == 0:
+            st.caption("No vetted deals (passing the crawler's budget/discount/profit/mileage bar) "
+                       "match these filters right now — try widening the price range or region.")
+        else:
+            top = deals_f.sort_values("score", ascending=False).head(5).copy()
+            top["label"] = top.apply(
+                lambda r: f"{r['brand']} {r['model']} ({int(r['year']) if pd.notna(r['year']) else '?'}) "
+                          f"· {money(r['price'])}",
+                axis=1,
+            )
+
+            # Near-miss count: ads matching the same filters that are cheap vs. their OWN median
+            # (deal_rating Great/Good) but never made it into `deals` — i.e. failed the budget/
+            # profit/mileage/blacklist bar. Reported separately, never blended into the deal list:
+            # a below-median ad that doesn't clear that bar isn't one a flipper can act on, however
+            # good it looks by price-vs-median alone.
+            near_miss_count = None
+            good_ads = ads_f[~ads_f["is_blacklisted"].fillna(False)].dropna(
+                subset=["price", "year", "brand", "model"])
+            if not good_ads.empty and not stats.empty:
+                stats_idx_top = deal_engine.build_stats_index(stats.to_dict("records"))
+
+                def _rating_top(row):
+                    st_ = stats_idx_top.get(deal_engine.stats_key(row["brand"], row["model"], row["year"]))
+                    if not st_ or not st_.get("median_price"):
+                        return None
+                    return deal_engine.deal_rating(1 - row["price"] / float(st_["median_price"]))
+
+                good_ratings = good_ads.apply(_rating_top, axis=1)
+                good_ids = set(good_ads.loc[good_ratings.isin(["Great deal", "Good deal"]), "id"])
+                near_miss_count = len(good_ids - set(deals_f["ad_id"])) or None
+
+            # Regional-arbitrage aside: where the models actually surfaced clear elsewhere, so a
+            # region filter doesn't silently hide the cross-region spread the crawler exists to find.
+            arb_pool = ctx.deals[ctx.deals["status"] == "ativo"]
+            if brand != "All brands":
+                arb_pool = arb_pool[arb_pool["brand"] == brand]
+            if fuel != "All fuels":
+                arb_pool = arb_pool[arb_pool["fuel"] == fuel]
+            arb_pool = arb_pool[arb_pool["brand"].isin(top["brand"]) & arb_pool["model"].isin(top["model"])]
+            region_counts = arb_pool.dropna(subset=["region"]).groupby("region").agg(
+                median=("price", "median"), count=("price", "size"))
+            region_counts = region_counts[region_counts["count"] >= 2].sort_values("count", ascending=False).head(5)
+            region_breakdown = {
+                r: {"median_eur": round(float(row["median"])), "count": int(row["count"])}
+                for r, row in region_counts.iterrows()
+            } or None
+
+            deals_payload = [{
+                "label": r["label"],
+                "price_eur": int(r["price"]),
+                "median_eur": round(float(r["median_price"])) if pd.notna(r["median_price"]) else None,
+                "discount_pct": round(float(r["discount"]) * 100) if pd.notna(r["discount"]) else None,
+                "est_profit_eur": round(float(r["est_profit"])) if pd.notna(r["est_profit"]) else None,
+                "confidence": CONF_META.get(r["confidence"], (r["confidence"],))[0],
+                "n_comps": int(r["n"]) if pd.notna(r["n"]) else None,
+                "mileage_km": int(r["mileage"]) if pd.notna(r["mileage"]) else None,
+                "km_band": _km_band_label(r["mileage"]) if pd.notna(r["mileage"]) else None,
+                "region": r["region"] if pd.notna(r["region"]) else None,
+                "fuel": r["fuel"] if pd.notna(r["fuel"]) else None,
+                "days_listed": int(r["days_listed"]) if pd.notna(r.get("days_listed")) else None,
+                "price_drop_eur": round(float(r["price_drop"])) if pd.notna(r.get("price_drop")) else None,
+            } for _, r in top.iterrows()]
+
+            summary = {
+                "total_matches": total_matches,
+                "shown": len(deals_payload),
+                "near_miss_count": near_miss_count,
+                "region_breakdown": region_breakdown,
+                "deals": deals_payload,
+            }
+            summary = {k: v for k, v in summary.items() if v not in (None, {}, [])}
+
+            # Filter/count line is rendered here, not by the LLM — a free-tier 20B model at low
+            # reasoning effort proved unreliable at echoing a specific number back out of a nested
+            # dict (verified: it substituted the dataset's 15,000 max for an actual 2,201 filter
+            # despite an explicit "quote digit for digit" instruction). Anything the app can state
+            # deterministically, it should — the model's job is narrating the deals, not formatting
+            # numbers it was just handed.
+            filter_bits = [brand if brand != "All brands" else None, region if region != "All regions" else None,
+                           fuel if fuel != "All fuels" else None, f"{yr_lo}–{yr_hi}", f"up to {money(p_hi)}"]
+            st.caption(f"Filters: {' · '.join(b for b in filter_bits if b)} — "
+                       f"top {len(deals_payload)} of {total_matches} vetted deals, ranked by score.")
+
+            if st.button("Generate brief", key="ai_brief_btn", icon=":material/auto_awesome:"):
+                with st.spinner("Asking the model..."):
+                    brief = ai_brief.generate_brief(summary)
+                if brief:
+                    st.info(brief)
+                    st.caption("Real listings referenced above (not AI-generated links):")
+                    for _, r in top.iterrows():
+                        st.markdown(f"- **{r['label']}** — [{r['title']}]({r['url']})")
+                else:
+                    st.caption("Couldn't generate a brief right now — check GROQ_API_KEY and try again.")
 
     if display.empty:
         st.info("No models match these filters.")
@@ -346,105 +477,3 @@ def render_market_tab(ctx: Context):
             render_bar_list(rows, lambda r: r["label"], lambda r: r["value"], lambda v: f"{v} ads",
                              color_fn=lambda r: RATING_COLORS[r["label"]])
 
-    st.write("")
-    st.markdown("**AI market brief** (optional, free)")
-    if not ai_brief.available():
-        st.caption("Set GROQ_API_KEY (free tier at console.groq.com) in secrets/.env to turn on a "
-                   "short AI summary of this selection here — every other Market tab feature "
-                   "works without it.")
-    elif rating_pts.empty:
-        st.caption("Pick a brand/model above to generate a brief.")
-    elif not sel_bucket or sel_bucket == "All years":
-        # "All years" spans every generation/facelift of a model (e.g. BMW 116 built 2004-2026) as one
-        # blended median and comp count — not a real comparison, even though the rating histogram above
-        # stays correct (each ad is scored against its own generation's median, not the blend). Pick a
-        # specific 2-year bucket so the brief describes one actual generation instead of a false average.
-        st.caption("Pick a specific year range above (not “All years”) to generate a brief — "
-                   "different generations of the same model aren't really comparable.")
-    else:
-        # Active-only slice of rating_pts (already blacklist-clean) — a comp that's sold/delisted
-        # shouldn't count toward "stock available now" or be offered up as a clickable link.
-        active_mask = rating_pts.apply(
-            lambda r: not comp_sold_info(r.get("last_seen"), r.get("olx_created_at"),
-                                          r.get("url_status"), config.ACTIVE_WINDOW_DAYS)[0],
-            axis=1,
-        )
-        active_pts = rating_pts[active_mask]
-
-        stat = stats_idx.get(deal_engine.stats_key(sel_brand, sel_model, sel_bucket))
-        p25_eur = round(float(stat["p25"])) if stat and stat.get("p25") is not None else None
-        confidence_label = deal_engine.confidence(stat) if stat else None
-
-        # Only a real budget signal if the user actually moved the slider down, or a fallback to
-        # the app's own flip budget (config.BUDGET) when that's still tighter than the dataset —
-        # an untouched slider defaults to the dataset max, which is not a "budget".
-        budget_eur = None
-        if p_hi < p_hi_b:
-            budget_eur = p_hi
-        elif config.BUDGET < p_hi_b:
-            budget_eur = config.BUDGET
-        comps_in_budget = int((rating_pts["price"] <= budget_eur).sum()) if budget_eur is not None else None
-
-        target_region = region if region != "All regions" else None
-
-        region_counts = rating_pts.dropna(subset=["region"]).groupby("region").agg(
-            median=("price", "median"), count=("price", "size"))
-        region_counts = region_counts[region_counts["count"] >= 3].sort_values("count", ascending=False).head(5)
-        region_breakdown = {
-            r: {"median_eur": round(float(row["median"])), "count": int(row["count"])}
-            for r, row in region_counts.iterrows()
-        } or None
-        comps_in_region = (region_breakdown or {}).get(target_region, {}).get("count") if target_region else None
-
-        fuel_counts = rating_pts.dropna(subset=["fuel"])["fuel"].value_counts()
-        fuel_breakdown = {k: int(v) for k, v in fuel_counts.items()} or None
-
-        median_mileage_km = (round(float(rating_pts["mileage"].dropna().median()))
-                              if not rating_pts["mileage"].dropna().empty else None)
-
-        # Real comps for the model to reference narratively (no URL — it can't be trusted to
-        # reproduce one) and, separately, real clickable links rendered by the app itself.
-        good_idx = ratings[ratings.isin(["Great deal", "Good deal"])].index
-        top_source = active_pts.loc[active_pts.index.intersection(good_idx)].sort_values("price").head(3)
-        top_comps = [
-            {"price_eur": int(r["price"]), "mileage_km": int(r["mileage"]) if pd.notna(r["mileage"]) else None,
-             "region": r["region"] if pd.notna(r["region"]) else None}
-            for _, r in top_source.iterrows()
-        ] or None
-        top_comps_links = [
-            {"title": r["title"], "price_eur": int(r["price"]), "url": r["url"]}
-            for _, r in top_source.iterrows()
-        ]
-
-        summary = {
-            "brand": sel_brand,
-            "model": sel_model,
-            "year_range": f"{sel_bucket}–{sel_bucket + 1}",
-            "comps_in_view": int(len(rating_pts)),
-            "active_comps_n": int(len(active_pts)),
-            "asking_median_eur": round(float(rating_pts["price"].median())) if not rating_pts["price"].empty else None,
-            "p25_eur": p25_eur,
-            "confidence_label": confidence_label,
-            "deal_rating_counts": {k: int(v) for k, v in ratings.value_counts().items()} if not ratings.empty else {},
-            "median_mileage_km": median_mileage_km,
-            "fuel_breakdown": fuel_breakdown,
-            "region_breakdown": region_breakdown,
-            "budget_eur": budget_eur,
-            "comps_in_budget": comps_in_budget,
-            "target_region": target_region,
-            "comps_in_region": comps_in_region,
-            "top_comps": top_comps,
-        }
-        summary = {k: v for k, v in summary.items() if v is not None}
-
-        if st.button("Generate brief", key="ai_brief_btn", icon=":material/auto_awesome:"):
-            with st.spinner("Asking the model..."):
-                brief = ai_brief.generate_brief(summary)
-            if brief:
-                st.info(brief)
-                if top_comps_links:
-                    st.caption("Real comps referenced above (not AI-generated links):")
-                    for c in top_comps_links:
-                        st.markdown(f"- [{c['title']}]({c['url']}) — {money(c['price_eur'])}")
-            else:
-                st.caption("Couldn't generate a brief right now — check GROQ_API_KEY and try again.")
