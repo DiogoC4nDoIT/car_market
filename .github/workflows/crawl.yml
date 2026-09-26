@@ -22,7 +22,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt
+          cache-dependency-path: requirements-crawler.txt
+      # Crawler/digest never import pandas/streamlit — those are dashboard-only
+      # (verified: no src/ file references either), so installing the full
+      # requirements.txt here just pays for dozens of unused transitive deps
+      # (pyarrow, altair, tornado, ...) on every single run.
+      - run: pip install -r requirements-crawler.txt
       # The daily digest (08:00 UTC) only reads Supabase and sends a Telegram
       # message — it never touches OLX, so it doesn't need a browser at all.
       # Only install one for the crawl/deep-sweep runs, and cache the browser
@@ -33,9 +38,7 @@ jobs:
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-      - if: github.event.schedule != '0 8 * * *'
-        run: pip install playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('requirements-crawler.txt') }}
       - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit != 'true'
         run: playwright install --with-deps chromium
       - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit == 'true'

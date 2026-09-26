@@ -1,0 +1,7 @@
+requests>=2.32
+supabase>=2.6
+python-dotenv>=1.0
+# Pinned (not >=): the CI cache key for the Chromium binary is keyed off this
+# file's hash, so an unpinned version here would let playwright silently drift
+# to a build actions/cache never invalidates for.
+playwright==1.63.0
