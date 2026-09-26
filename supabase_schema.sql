@@ -34,8 +34,11 @@ create table if not exists ad_flags (
   ad_id      bigint not null references ads(id),
   flag       text not null,              -- 'skipped' | 'favourite'
   created_at timestamptz not null default now(),
+  source     text not null default 'manual', -- 'manual' (dashboard star click) | 'saved_search' (crawler auto-favourited a saved-search match)
   primary key (ad_id, flag)
 );
+
+alter table ad_flags add column if not exists source text not null default 'manual';
 
 create index if not exists ad_flags_flag_idx on ad_flags (flag);
 
@@ -88,8 +91,8 @@ create table if not exists price_history (
   primary key (ad_id, seen_at)
 );
 
--- Named saved filter criteria ("favourite deals"). Single-user app, no RLS,
--- same as ad_flags — written directly by the dashboard's anon key.
+-- Named saved filter criteria ("favourite deals"). Single-user app, written
+-- directly by the dashboard's anon key, same as ad_flags.
 create table if not exists saved_searches (
   id         bigserial primary key,
   name       text not null,
@@ -114,6 +117,48 @@ create table if not exists crawl_runs (
   ads_fetched  int,
   deals_found  int
 );
+
+-- RLS for the remaining tables: same single-user pattern as ads/deals above
+-- (public read, anon/authenticated read+write — no auth concept in this app,
+-- the dashboard and crawler both talk to Supabase with the anon key).
+alter table ad_flags enable row level security;
+alter table price_history enable row level security;
+alter table saved_searches enable row level security;
+alter table saved_search_matches enable row level security;
+alter table crawl_runs enable row level security;
+
+drop policy if exists "public read access" on ad_flags;
+create policy "public read access" on ad_flags for select to anon, authenticated using (true);
+drop policy if exists "backend insert access" on ad_flags;
+create policy "backend insert access" on ad_flags for insert to anon, authenticated with check (true);
+drop policy if exists "backend delete access" on ad_flags;
+create policy "backend delete access" on ad_flags for delete to anon, authenticated using (true);
+
+drop policy if exists "public read access" on price_history;
+create policy "public read access" on price_history for select to anon, authenticated using (true);
+drop policy if exists "backend insert access" on price_history;
+create policy "backend insert access" on price_history for insert to anon, authenticated with check (true);
+
+drop policy if exists "public read access" on saved_searches;
+create policy "public read access" on saved_searches for select to anon, authenticated using (true);
+drop policy if exists "backend insert access" on saved_searches;
+create policy "backend insert access" on saved_searches for insert to anon, authenticated with check (true);
+drop policy if exists "backend update access" on saved_searches;
+create policy "backend update access" on saved_searches for update to anon, authenticated using (true) with check (true);
+drop policy if exists "backend delete access" on saved_searches;
+create policy "backend delete access" on saved_searches for delete to anon, authenticated using (true);
+
+drop policy if exists "public read access" on saved_search_matches;
+create policy "public read access" on saved_search_matches for select to anon, authenticated using (true);
+drop policy if exists "backend insert access" on saved_search_matches;
+create policy "backend insert access" on saved_search_matches for insert to anon, authenticated with check (true);
+
+drop policy if exists "public read access" on crawl_runs;
+create policy "public read access" on crawl_runs for select to anon, authenticated using (true);
+drop policy if exists "backend insert access" on crawl_runs;
+create policy "backend insert access" on crawl_runs for insert to anon, authenticated with check (true);
+drop policy if exists "backend update access" on crawl_runs;
+create policy "backend update access" on crawl_runs for update to anon, authenticated using (true) with check (true);
 
 -- Views are dropped first: create-or-replace can't reorder/insert columns.
 drop view if exists deals_view;
@@ -200,6 +245,7 @@ with dated as (
     brand, model, (year / 2) * 2 as year_bucket,
     olx_created_at,
     last_seen,
+    price,
     case
       when url_status in ('sold', 'removed') then url_checked_at
       when last_seen <= now() - interval '8 days' then last_seen
@@ -219,7 +265,14 @@ select
   percentile_cont(0.5) within group (
     order by extract(epoch from (sold_at - olx_created_at)) / 86400
   ) filter (where sold_at is not null and olx_created_at is not null
-            and sold_at > olx_created_at) as median_days_to_sell
+            and sold_at > olx_created_at) as median_days_to_sell,
+  -- Last known scraped price for ads inferred sold, not a confirmed sale price
+  -- (OLX doesn't expose one) — same asking-price methodology as market_stats,
+  -- just restricted to the sold subset.
+  percentile_cont(0.5) within group (order by price) filter (
+    where sold_at is not null and olx_created_at is not null
+      and sold_at > olx_created_at and price is not null and price > 100
+  ) as sold_median_price
 from dated
 group by 1, 2, 3;
 

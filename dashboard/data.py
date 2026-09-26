@@ -78,7 +78,12 @@ def count_ads(brand=None, region=None, fuel=None, yr_lo=None, yr_hi=None,
 
 
 def set_flag(ad_id: int, flag: str):
-    sb().table("ad_flags").upsert({"ad_id": int(ad_id), "flag": flag}).execute()
+    """source='manual' is written explicitly (overwriting any prior value) since
+    a dashboard click is always a deliberate user action — even if the ad had
+    been auto-favourited earlier via a saved-search match (source='saved_search',
+    set by src.db.set_favourite_from_search_match), the user starring it here
+    should reclassify it as manual."""
+    sb().table("ad_flags").upsert({"ad_id": int(ad_id), "flag": flag, "source": "manual"}).execute()
     st.cache_data.clear()
 
 

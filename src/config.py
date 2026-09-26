@@ -4,6 +4,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _env(name: str, default: str) -> str:
+    """os.getenv() but treats "" as unset too — verify-urls.yml wires optional
+    workflow_dispatch inputs straight through as env vars, and on a scheduled
+    (non-dispatch) run those inputs are "" rather than absent."""
+    return os.getenv(name) or default
+
 # Empty is tolerated at import time so I/O-free consumers (e.g. the dashboard,
 # which gets its creds from st.secrets) can import this module; db.client()
 # fails fast if a DB-touching process starts without them.
@@ -43,8 +50,8 @@ DEEP_SWEEP = os.getenv("DEEP_SWEEP", "0") == "1"
 # backlog within ~2 days at this cadence (every 4h, see verify-urls.yml).
 URL_CHECK_BATCH_SIZE = int(os.getenv("URL_CHECK_BATCH_SIZE", 1500))
 URL_CHECK_LOOKBACK_DAYS = int(os.getenv("URL_CHECK_LOOKBACK_DAYS", 90))
-URL_CHECK_CONCURRENCY = int(os.getenv("URL_CHECK_CONCURRENCY", 2))
-URL_CHECK_DELAY_SECONDS = float(os.getenv("URL_CHECK_DELAY_SECONDS", 0.5))
+URL_CHECK_CONCURRENCY = int(_env("URL_CHECK_CONCURRENCY", "2"))
+URL_CHECK_DELAY_SECONDS = float(_env("URL_CHECK_DELAY_SECONDS", "0.5"))
 
 # Resale friction: assume you sell at ~85% of median (haggling, fees, time)
 RESALE_FACTOR = 0.85

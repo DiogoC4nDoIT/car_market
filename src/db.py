@@ -184,8 +184,15 @@ def favourite_ad_ids() -> set[int]:
     return {r["ad_id"] for r in res.data}
 
 
-def set_favourite(ad_id: int):
-    client().table("ad_flags").upsert({"ad_id": ad_id, "flag": "favourite"}).execute()
+def set_favourite_from_search_match(ad_id: int):
+    """Auto-favourites an ad that matched a saved search, so price-drop alerts
+    start tracking it — tagged source='saved_search' (as opposed to a manual
+    dashboard star click) and ignore_duplicates so it never clobbers an
+    existing row's source (manual or otherwise) if the ad was already flagged."""
+    (client().table("ad_flags")
+     .upsert({"ad_id": ad_id, "flag": "favourite", "source": "saved_search"},
+             ignore_duplicates=True)
+     .execute())
 
 
 def saved_searches() -> list[dict]:

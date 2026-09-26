@@ -1,28 +1,66 @@
+import pandas as pd
 import streamlit as st
 
 from dashboard.components import render_deal_card
 from dashboard.context import Context
 from dashboard.data import apply_filters, delete_saved_search
-from dashboard.format_utils import describe_filters
+from dashboard.format_utils import describe_filters, sold_at
+
+
+def _sorted_fav_view(ctx: Context, ad_ids: set, fav_added_at: pd.Series) -> pd.DataFrame:
+    """Not-gone ads first (most recently favourited first), then gone ads
+    (most recently sold first) — favouriting a live ad is "watch this", a
+    gone one is "what happened to this"."""
+    view = ctx.deals[ctx.deals["ad_id"].isin(ad_ids) & ~ctx.deals["ad_id"].isin(ctx.skipped_ids)].copy()
+    view["fav_added_at"] = view["ad_id"].map(fav_added_at)
+    view["sold_at"] = view.apply(sold_at, axis=1)
+    is_gone = view["status"] == "desaparecido"
+    return pd.concat([
+        view[~is_gone].sort_values("fav_added_at", ascending=False),
+        view[is_gone].sort_values("sold_at", ascending=False),
+    ])
 
 
 def render_favourites_tab(ctx: Context):
     if not ctx.fav_ids and ctx.searches.empty:
-        st.info("No favourites yet — tap ☆ Fav on a deal to save it, or save a filter combo "
+        st.info("No favourites yet — tap Fav on a deal to save it, or save a filter combo "
                  "from the Deals tab as a favourite deal.")
         return
 
-    st.markdown("**★ Favourite ads**")
-    if not ctx.fav_ids:
-        st.caption("No starred ads yet — tap ☆ Fav on a deal card to pin it here.")
+    fav_flags = ctx.flags[ctx.flags["flag"] == "favourite"] if not ctx.flags.empty else ctx.flags
+    fav_added_at = fav_flags.set_index("ad_id")["created_at"] if not fav_flags.empty else pd.Series(dtype="object")
+    manual_ids = ctx.manual_fav_ids
+    auto_ids = ctx.fav_ids - manual_ids
+
+    st.markdown("**Favourite ads**")
+    st.caption("Ads you individually starred.")
+    if not manual_ids:
+        st.caption("No starred ads yet — tap Fav on a deal card to pin it here.")
     else:
-        view = ctx.deals[ctx.deals["ad_id"].isin(ctx.fav_ids)].sort_values("score", ascending=False)
+        view = _sorted_fav_view(ctx, manual_ids, fav_added_at)
         st.caption(f"{len(view)} favourited")
+        if view.empty:
+            st.caption("All favourited ads are currently skipped.")
         for _, d in view.iterrows():
-            render_deal_card(d, ctx.fav_ids, key_prefix="favad_")
+            render_deal_card(d, ctx.fav_ids, ctx.manual_fav_ids, key_prefix="favad_")
 
     st.write("")
-    st.markdown("**⭐ Favourite deals**")
+    st.markdown("**Auto-tracked (saved search matches)**")
+    st.caption("Not individually starred — the crawler tracks these automatically because "
+               "they matched one of your favourite deal searches below, so price-drop "
+               "alerts keep following them. Tap Fav to claim one as your own favourite.")
+    if not auto_ids:
+        st.caption("Nothing auto-tracked right now.")
+    else:
+        view = _sorted_fav_view(ctx, auto_ids, fav_added_at)
+        st.caption(f"{len(view)} auto-tracked")
+        if view.empty:
+            st.caption("All auto-tracked ads are currently skipped.")
+        for _, d in view.iterrows():
+            render_deal_card(d, ctx.fav_ids, ctx.manual_fav_ids, key_prefix="favauto_")
+
+    st.write("")
+    st.markdown("**Favourite deals**")
     st.caption("Saved filter combos from the Deals tab. New matches and price changes on "
                "favourite ads are also sent to Telegram.")
     if ctx.searches.empty:
@@ -34,9 +72,9 @@ def render_favourites_tab(ctx: Context):
         search_id, name, filters = int(search["id"]), search["name"], search["filters"]
         view = apply_filters(ctx.deals[~ctx.deals["ad_id"].isin(ctx.skipped_ids)], filters)
         view = view.sort_values("score", ascending=False)
-        label = f"⭐ {name} — {len(view)} matching deal{'s' if len(view) != 1 else ''}"
+        label = f"{name} — {len(view)} matching deal{'s' if len(view) != 1 else ''}"
         with st.expander(label, expanded=False):
-            if st.button("🗑 Delete", key=f"del_search_{search_id}"):
+            if st.button("Delete", icon=":material/delete:", key=f"del_search_{search_id}"):
                 delete_saved_search(search_id)
                 st.rerun()
 
@@ -46,4 +84,4 @@ def render_favourites_tab(ctx: Context):
                 st.caption("No live deals match this search right now.")
             else:
                 for _, d in view.iterrows():
-                    render_deal_card(d, ctx.fav_ids, key_prefix=f"search{search_id}_")
+                    render_deal_card(d, ctx.fav_ids, ctx.manual_fav_ids, key_prefix=f"search{search_id}_")

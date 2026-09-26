@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 import pandas as pd
 
 CONF_META = {
-    "alta": ("High", "#2f7d4f"),
-    "media": ("Medium", "#c99a3f"),
-    "baixa": ("Low", "#b5623a"),
+    "alta": ("High", "var(--success-main)"),
+    "media": ("Medium", "var(--warning-main)"),
+    "baixa": ("Low", "var(--error-main)"),
 }
 CONF_BADGE = {"alta": "🟢 alta", "media": "🟡 média", "baixa": "🔴 baixa"}
 
@@ -51,23 +51,41 @@ def describe_filters(filters):
 
 def verdict_for(score):
     if score >= 85:
-        return "Strong", "#1c3d2e", "#e8c07a"
+        return "Strong", "var(--success-light)", "var(--success-dark)"
     if score >= 66:
-        return "Fair", "#efe6d0", "#8a6a2c"
-    return "Watch", "#f3e2d8", "#a4502f"
+        return "Fair", "var(--warning-light)", "var(--warning-dark)"
+    return "Watch", "var(--info-light)", "var(--info-dark)"
 
 
 def score_color(score):
     if score >= 85:
-        return "#2f6b47"
+        return "var(--success-dark)"
     if score >= 66:
-        return "#c99a3f"
-    return "#b5623a"
+        return "var(--warning-dark)"
+    return "var(--info-dark)"
 
 
 def minutes_since(ts: str) -> float:
     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     return (datetime.now(timezone.utc) - dt).total_seconds() / 60
+
+
+def sold_at(d):
+    """Best-known date a gone ad disappeared: the confirmed url_status check
+    (src/url_checker.py) when available, else last_seen — same precedence as
+    market_liquidity's sold_at. Returns None if the ad isn't gone or has no
+    usable timestamp."""
+    if d.get("status") != "desaparecido":
+        return None
+    if d.get("url_status") in ("sold", "removed") and pd.notna(d.get("url_checked_at")):
+        return d["url_checked_at"]
+    return d.get("last_seen") if pd.notna(d.get("last_seen")) else None
+
+
+def fmt_date(ts):
+    if ts is None or pd.isna(ts):
+        return "—"
+    return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).strftime("%d %b %Y")
 
 
 def comp_sold_info(last_seen, olx_created_at, url_status=None, active_window_days=None):

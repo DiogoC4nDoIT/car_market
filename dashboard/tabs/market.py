@@ -32,7 +32,7 @@ def render_market_tab(ctx: Context):
     with st.container(border=True):
         top = st.columns([8, 1])
         with top[1]:
-            if st.button("↺ Reset", key="market_reset_filters", use_container_width=True,
+            if st.button("Reset", icon=":material/refresh:", key="market_reset_filters", use_container_width=True,
                          help="Clear all Market filters"):
                 for k in ("market_filter_brand", "market_filter_region", "market_filter_fuel",
                           "market_filter_year", "market_filter_price"):
@@ -104,17 +104,20 @@ def render_market_tab(ctx: Context):
         days_fmt = JsCode("function(p){return p.value==null?'':Math.round(p.value)+' d';}")
         render_filterable_table(
             table[["model_label", "year_label", "n", "median_price", "p25", "p75",
-                   "active_ads", "median_days_to_sell"]],
+                   "sold_median_price", "sold_n", "active_ads", "median_days_to_sell"]],
             column_config={
                 "model_label": dict(header_name="Model"),
                 "year_label": dict(header_name="Year"),
                 "n": dict(header_name="N", type=["numericColumn"], filter="agNumberColumnFilter"),
-                "median_price": dict(header_name="Median", type=["numericColumn"],
+                "median_price": dict(header_name="Asking median", type=["numericColumn"],
                                       filter="agNumberColumnFilter", valueFormatter=euro_fmt),
                 "p25": dict(header_name="P25", type=["numericColumn"],
                             filter="agNumberColumnFilter", valueFormatter=euro_fmt),
                 "p75": dict(header_name="P75", type=["numericColumn"],
                             filter="agNumberColumnFilter", valueFormatter=euro_fmt),
+                "sold_median_price": dict(header_name="Sold median", type=["numericColumn"],
+                                           filter="agNumberColumnFilter", valueFormatter=euro_fmt),
+                "sold_n": dict(header_name="N sold", type=["numericColumn"], filter="agNumberColumnFilter"),
                 "active_ads": dict(header_name="Active", type=["numericColumn"], filter="agNumberColumnFilter"),
                 "median_days_to_sell": dict(header_name="Days to sell", type=["numericColumn"],
                                              filter="agNumberColumnFilter", valueFormatter=days_fmt),
@@ -143,7 +146,7 @@ def render_market_tab(ctx: Context):
                                  + liq_chart["year_bucket"].astype(int).astype(str) + "–"
                                  + (liq_chart["year_bucket"].astype(int) + 1).astype(str))
             render_bar_list(liq_chart.to_dict("records"), lambda r: r["name"], lambda r: r["median_days_to_sell"],
-                             lambda v: f"{v:.0f}d", color="linear-gradient(90deg,#8a6a2c,#c99a3f)",
+                             lambda v: f"{v:.0f}d", color="linear-gradient(90deg,var(--warning-dark),var(--warning-main))",
                              count_fn=lambda r: f'{int(r["sold_n"])} sold')
 
     st.write("")
@@ -167,7 +170,7 @@ def render_market_tab(ctx: Context):
             st.caption("Not enough priced ads with fuel data for this selection.")
         else:
             render_bar_list(fu.to_dict("records"), lambda r: f'{r["fuel"]} ({int(r["count"])})',
-                             lambda r: r["median"], money, color="linear-gradient(90deg,#5b4630,#a4502f)")
+                             lambda r: r["median"], money, color="linear-gradient(90deg,var(--info-dark),var(--info-main))")
 
     st.write("")
     st.markdown("**Model deep-dive**")
@@ -197,7 +200,7 @@ def render_market_tab(ctx: Context):
         if scatter_pts.empty:
             st.caption("No ads with both price and mileage for this selection.")
         else:
-            st.scatter_chart(scatter_pts, x="mileage", y="price", color="#1c3d2e", x_label="km", y_label="€")
+            st.scatter_chart(scatter_pts, x="mileage", y="price", color="#ff5000", x_label="km", y_label="€")
     with d2:
         st.caption("Asking-price trend")
         if pts.empty:
@@ -211,4 +214,4 @@ def render_market_tab(ctx: Context):
                 ph["seen_at"] = pd.to_datetime(ph["seen_at"], utc=True).dt.tz_localize(None)
                 ph["week"] = ph["seen_at"].dt.to_period("W").dt.start_time
                 trend = ph.groupby("week")["price"].median().reset_index()
-                st.line_chart(trend, x="week", y="price", color="#1c3d2e", x_label="week", y_label="€ (median)")
+                st.line_chart(trend, x="week", y="price", color="#ff5000", x_label="week", y_label="€ (median)")

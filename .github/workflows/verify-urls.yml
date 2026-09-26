@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "15 */12 * * *"  # re-check a batch of stored ad urls twice a day
   workflow_dispatch:
+    inputs:
+      delay_seconds:
+        description: "Override URL_CHECK_DELAY_SECONDS (rate-limit probing only — leave blank for the production default)"
+        type: string
+        default: ""
+      concurrency:
+        description: "Override URL_CHECK_CONCURRENCY (leave blank for the production default)"
+        type: string
+        default: ""
 
 jobs:
   verify:
@@ -44,4 +53,6 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
           OLX_BROWSER: "1"
+          URL_CHECK_DELAY_SECONDS: ${{ inputs.delay_seconds }}
+          URL_CHECK_CONCURRENCY: ${{ inputs.concurrency }}
         run: python -m src.url_checker

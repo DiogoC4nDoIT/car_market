@@ -32,26 +32,32 @@ def render_detail(ctx: Context, ad_id: int):
         f'flex-wrap:wrap;margin-top:10px">'
         f'<div><div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">'
         f'<span class="stand-badge" style="background:{vbg};color:{vcolor}">{verdict.upper()}</span>'
-        + ('<span style="font-size:11px;color:#a4502f">👻 vanished — may be sold</span>' if gone else '') +
-        f'</div><h1 style="font:500 27px \'Newsreader\',serif;color:#22201a;margin:12px 0 5px">'
-        f'{esc(d["title"])}</h1>'
-        f'<div style="font-size:13px;color:#8c856f">{year} · {km} km · {esc(d.get("fuel") or "?")} · '
+        + ('<span style="font-size:11px;color:var(--error-dark)">vanished — may be sold</span>' if gone else '') +
+        f'</div><h1 style="font:100 27px var(--font-family);color:var(--text-primary);margin:12px 0 5px">'
+        f'<a href="{esc(d["url"])}" target="_blank" style="color:inherit;text-decoration:none">{esc(d["title"])}</a></h1>'
+        f'<div style="font-size:13px;color:var(--text-secondary)">{year} · {km} km · {esc(d.get("fuel") or "?")} · '
         f'{esc(d.get("region") or "?")}</div></div>'
         f'<div style="text-align:center;flex:none">'
-        f'<div style="font:600 40px \'Newsreader\',serif;color:{score_color(d["display_score"])};line-height:.9">'
+        f'<div style="font:600 40px var(--font-family);color:{score_color(d["display_score"])};line-height:.9">'
         f'{d["display_score"]:.0f}</div>'
         f'<div class="stand-label" style="margin-top:2px">DEAL SCORE</div></div></div>',
         unsafe_allow_html=True,
     )
 
     if pd.notna(d.get("photo_url")):
-        st.image(d["photo_url"], use_container_width=True)
+        st.markdown(
+            f'<a href="{esc(d["url"])}" target="_blank">'
+            f'<img src="{esc(d["photo_url"])}" style="width:100%;border-radius:var(--radius);'
+            f'margin-top:12px;object-fit:cover"></a>',
+            unsafe_allow_html=True,
+        )
     else:
         st.markdown(
-            '<div style="width:100%;height:160px;border-radius:11px;margin:18px 0;'
-            'background:repeating-linear-gradient(135deg,#eae2d0 0 11px,#e2d9c4 11px 22px);'
-            'display:flex;align-items:center;justify-content:center;font:400 10px \'JetBrains Mono\',monospace;'
-            'color:#a89e83">VEHICLE PHOTO</div>',
+            f'<a href="{esc(d["url"])}" target="_blank" style="display:flex;width:100%;height:160px;'
+            'border-radius:var(--radius);margin:18px 0;'
+            'background:repeating-linear-gradient(135deg,var(--grey-100) 0 11px,var(--grey-200) 11px 22px);'
+            'align-items:center;justify-content:center;font:400 10px var(--font-family-monospace);'
+            f'color:var(--text-disabled)">VEHICLE PHOTO</a>',
             unsafe_allow_html=True,
         )
 
@@ -64,10 +70,10 @@ def render_detail(ctx: Context, ad_id: int):
             + kv_row("Market median", money(d["median_price"]))
             + kv_row(f"Resale @ {int(config.RESALE_FACTOR * 100)}%", money(resale_value))
             + kv_row("Ask price", f"− {money(d['price'])}")
-            + '<div style="height:1px;background:#e0d7c1;margin:8px 0"></div>'
+            + '<div style="height:1px;background:var(--divider);margin:8px 0"></div>'
             + '<div style="display:flex;justify-content:space-between;align-items:baseline">'
-            + '<span style="font-size:13px;font-weight:500;color:#22201a">Est. profit</span>'
-            + f'<span style="font:600 22px \'Newsreader\',serif;color:#2f6b47">{money(d["est_profit"])}</span></div>'
+            + '<span style="font-size:13px;font-weight:500;color:var(--text-primary)">Est. profit</span>'
+            + f'<span style="font:600 22px var(--font-family);color:var(--success-dark)">{money(d["est_profit"])}</span></div>'
             + '</div>',
             unsafe_allow_html=True,
         )
@@ -83,25 +89,25 @@ def render_detail(ctx: Context, ad_id: int):
             '<div class="stand-card">'
             '<div class="stand-label" style="margin-bottom:14px">PRICE POSITION</div>'
             '<div style="position:relative;height:8px;border-radius:4px;'
-            'background:linear-gradient(90deg,#3f8659,#e8c07a,#cf7a4e);margin:16px 4px 8px">'
+            'background:linear-gradient(90deg,var(--success-main),var(--warning-main),var(--error-main));margin:16px 4px 8px">'
             f'<div style="position:absolute;top:-14px;transform:translateX(-50%);left:{pos(d["median_price"]):.0f}%;'
-            f'font:400 9px \'JetBrains Mono\',monospace;color:#8c856f">mkt</div>'
-            f'<div style="position:absolute;top:-3px;width:2px;height:14px;background:#8c856f;'
+            f'font:400 9px var(--font-family-monospace);color:var(--text-secondary)">mkt</div>'
+            f'<div style="position:absolute;top:-3px;width:2px;height:14px;background:var(--text-secondary);'
             f'left:{pos(d["median_price"]):.0f}%"></div>'
             f'<div style="position:absolute;top:-4px;transform:translateX(-50%);left:{pos(d["price"]):.0f}%;'
-            'width:15px;height:15px;border-radius:50%;background:#1c3d2e;border:2.5px solid #efeadd;'
+            'width:15px;height:15px;border-radius:50%;background:var(--primary-main);border:2.5px solid var(--bg-default);'
             'box-shadow:0 1px 4px rgba(0,0,0,.25)"></div></div>'
-            f'<div style="display:flex;justify-content:space-between;font-size:10px;color:#a09a84;padding:0 2px">'
+            f'<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-disabled);padding:0 2px">'
             f'<span>{money(p25)}</span><span>{money(p75)}</span></div>'
-            f'<div style="font-size:12px;line-height:1.5;color:#6a6454;margin-top:12px">This ask sits '
-            f'<b style="color:#c99a3f">{d["discount"] * 100:.0f}% below</b> market median across '
+            f'<div style="font-size:12px;line-height:1.5;color:var(--text-secondary);margin-top:12px">This ask sits '
+            f'<b style="color:var(--warning-dark)">{d["discount"] * 100:.0f}% below</b> market median across '
             f'{int(d["n"]) if pd.notna(d.get("n")) else 0} comparable listings.</div>'
             '</div>',
             unsafe_allow_html=True,
         )
 
     t1, t2, t3 = st.columns(3)
-    conf_label, conf_color = CONF_META.get(d.get("confidence"), ("—", "#a09a84"))
+    conf_label, conf_color = CONF_META.get(d.get("confidence"), ("—", "var(--text-disabled)"))
     trust_value = (
         f'<div style="display:flex;align-items:center;gap:7px">'
         f'<span style="width:9px;height:9px;border-radius:50%;background:{conf_color}"></span>'
@@ -119,7 +125,8 @@ def render_detail(ctx: Context, ad_id: int):
     )
     drop = d.get("price_drop")
     days = int(d["days_listed"]) if pd.notna(d.get("days_listed")) else 0
-    listed_note = f'<span style="color:#a4502f">↓{money(drop)} recently</span>' if pd.notna(drop) else "price steady"
+    listed_note = (f'<span style="color:var(--error-dark)">↓{money(drop)} recently</span>'
+                   if pd.notna(drop) else "price steady")
     t3.markdown(
         stat_card("LISTED", f"{days} days", listed_note),
         unsafe_allow_html=True,
@@ -128,15 +135,21 @@ def render_detail(ctx: Context, ad_id: int):
     st.write("")
     b1, b2, b3 = st.columns([2, 1, 1])
     is_fav = ad_id in ctx.fav_ids
+    is_manual = ad_id in ctx.manual_fav_ids
     with b1:
-        st.link_button("Open on OLX ↗", d["url"], use_container_width=True)
+        st.link_button("Open on OLX", d["url"], icon=":material/open_in_new:", use_container_width=True)
     with b2:
-        if st.button("★ Favourited" if is_fav else "☆ Favourite", key=f"fav_detail_{ad_id}",
+        fav_icon = ":material/star:" if is_fav else ":material/star_border:"
+        if st.button("Favourited" if is_fav else "Favourite", icon=fav_icon, key=f"fav_detail_{ad_id}",
                       use_container_width=True):
-            toggle_flag(ad_id, "favourite", is_fav)
+            # is_manual (not is_fav) drives the toggle so clicking Fav on an
+            # ad auto-tracked via a saved-search match upgrades it to a
+            # manual favourite instead of deleting the tracking — see the
+            # matching comment in components.py's render_deal_card.
+            toggle_flag(ad_id, "favourite", is_manual)
             st.rerun()
     with b3:
-        if st.button("Skip", key=f"skip_detail_{ad_id}", use_container_width=True):
+        if st.button("Skip", icon=":material/close:", key=f"skip_detail_{ad_id}", use_container_width=True):
             set_flag(ad_id, "skipped")
             st.session_state.open_id = None
             st.query_params.pop("ad", None)
@@ -195,34 +208,34 @@ def render_detail(ctx: Context, ad_id: int):
             delta = cm["price"] - d["price"]
             delta_html = ""
             if not is_self:
-                delta_color = "#2f6b47" if delta >= 0 else "#a4502f"
+                delta_color = "var(--success-dark)" if delta >= 0 else "var(--error-dark)"
                 delta_text = f"+{money(delta)}" if delta >= 0 else f"−{money(-delta)}"
-                delta_html = f'<span style="font:500 12px \'JetBrains Mono\',monospace;color:{delta_color}">{delta_text}</span>'
-            self_html = ('<span class="stand-badge" style="background:#1c3d2e;color:#e8c07a">THIS AD</span>'
+                delta_html = f'<span style="font:500 12px var(--font-family-monospace);color:{delta_color}">{delta_text}</span>'
+            self_html = ('<span class="stand-badge" style="background:var(--primary-tint);color:var(--primary-dark)">THIS AD</span>'
                          if is_self else "")
             sold, days_to_sell = comp_sold_info(cm.get("last_seen"), cm.get("olx_created_at"),
                                                  cm.get("url_status"), config.ACTIVE_WINDOW_DAYS)
             sold_text = f"SOLD · ~{int(days_to_sell)}d" if sold and days_to_sell is not None else "SOLD"
-            sold_html = (f'<span class="stand-badge" style="background:#5c2b28;color:#e8b3a8">{sold_text}</span>'
+            sold_html = (f'<span class="stand-badge" style="background:var(--error-tint);color:var(--error-dark)">{sold_text}</span>'
                          if sold else "")
-            row_bg = "#f2ecdc" if is_self else "#faf7ef"
-            row_border = "#c99a3f" if is_self else "#e9e1cd"
-            rank_color = "#c99a3f" if is_self else "#a09a84"
+            row_bg = "var(--primary-tint)" if is_self else "var(--bg-paper)"
+            row_border = "var(--primary-light)" if is_self else "var(--divider)"
+            rank_color = "var(--primary-dark)" if is_self else "var(--text-disabled)"
             fuel_bit = f' · {esc(cm["fuel"])}' if pd.notna(cm.get("fuel")) else ""
             km_val = f'{int(cm["mileage"]):,}' if pd.notna(cm.get("mileage")) else "?"
             year_val = int(cm["year"]) if pd.notna(cm.get("year")) else "?"
             st.markdown(
                 f'<a href="{esc(cm["url"])}" target="_blank" style="display:flex;align-items:center;gap:12px;'
-                f'flex-wrap:wrap;padding:11px 14px;border-radius:9px;background:{row_bg};'
+                f'flex-wrap:wrap;padding:11px 14px;border-radius:var(--radius);background:{row_bg};'
                 f'border:1px solid {row_border};text-decoration:none;color:inherit">'
-                f'<span style="font:600 10px \'JetBrains Mono\',monospace;color:{rank_color};width:20px">'
+                f'<span style="font:600 10px var(--font-family-monospace);color:{rank_color};width:20px">'
                 f'#{int(cm["rank"])}</span>'
-                f'<span style="font:600 14px \'JetBrains Mono\',monospace;color:#22201a;width:80px">'
+                f'<span style="font:600 14px var(--font-family-monospace);color:var(--text-primary);width:80px">'
                 f'{money(cm["price"])}</span>'
-                f'<span style="font-size:12px;color:#6a6454">{km_val} km · {year_val} · '
+                f'<span style="font-size:12px;color:var(--text-secondary)">{km_val} km · {year_val} · '
                 f'{esc(cm.get("region") or "?")}{fuel_bit}</span>'
                 f'<span style="flex:1"></span>{sold_html}{self_html}{delta_html}'
-                f'<span style="font-size:11px;color:#1c3d2e;text-decoration:underline">View ad ↗</span>'
+                f'<span style="font-size:11px;color:var(--primary-main);text-decoration:underline">View ad ↗</span>'
                 f'</a>',
                 unsafe_allow_html=True,
             )

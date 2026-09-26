@@ -17,3 +17,4 @@ class Context:
     searches: pd.DataFrame
     skipped_ids: set
     fav_ids: set
+    manual_fav_ids: set

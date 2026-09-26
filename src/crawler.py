@@ -161,7 +161,7 @@ def notify_saved_search_matches(new_deals: list[dict], ads_by_id: dict):
             )
             # Matching a saved search makes an ad a favourite too, so price-drop
             # alerts (notify_favourite_price_changes) start tracking it going forward.
-            db.set_favourite(ad_id)
+            db.set_favourite_from_search_match(ad_id)
             new_rows.append({"search_id": search["id"], "ad_id": ad_id})
         db.insert_search_matches(new_rows)
 

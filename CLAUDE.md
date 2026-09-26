@@ -70,6 +70,11 @@ All tunable thresholds (`BUDGET`, `MARKET_CEILING`, `MIN_DISCOUNT`, `MIN_PROFIT`
 `CATEGORY_ID`, `DEEP_SWEEP`) are env vars loaded once in `src/config.py` — see `.env.example` for the full
 list and defaults.
 
+## Git commits
+
+Do not include a `Co-Authored-By: Claude` (or similar) trailer in commit messages. This applies to every
+commit and push made in this repo, regardless of default tool behavior.
+
 ## Deployment
 
 - Crawler: GitHub Actions (`.github/workflows/crawl.yml`), incremental hourly, deep sweep weekly

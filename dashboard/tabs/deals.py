@@ -46,7 +46,7 @@ def render_deals_tab(ctx: Context):
     with st.container(border=True):
         top = st.columns([8, 1])
         with top[1]:
-            if st.button("↺ Reset", key="deals_reset_filters", use_container_width=True,
+            if st.button("Reset", icon=":material/refresh:", key="deals_reset_filters", use_container_width=True,
                          help="Clear all Deals filters"):
                 st.session_state.deals_filters = {}
                 for k in ("deals_filter_profit", "deals_filter_km", "deals_filter_year",
@@ -108,7 +108,7 @@ def render_deals_tab(ctx: Context):
             "Search name", key="new_search_name", label_visibility="collapsed",
             placeholder="Name this filter combo, e.g. \"Cheap diesel wagons\"",
         )
-        if sn2.button("💾 Save search", use_container_width=True):
+        if sn2.button("Save search", icon=":material/save:", use_container_width=True):
             if search_name.strip():
                 create_saved_search(search_name.strip(), filters)
                 st.success(f"Saved “{search_name.strip()}” to Favourites → Favourite deals.")
@@ -139,7 +139,7 @@ def render_deals_tab(ctx: Context):
     if view.empty:
         st.caption("No deals match these filters — try widening the ranges above.")
     for _, d in view.iloc[start:start + DEALS_PAGE_SIZE].iterrows():
-        render_deal_card(d, ctx.fav_ids)
+        render_deal_card(d, ctx.fav_ids, ctx.manual_fav_ids)
 
     st.write("")
     pagination_controls("deals_page", total_pages, widget_key="deals_page_bottom")
