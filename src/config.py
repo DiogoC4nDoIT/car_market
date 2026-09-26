@@ -43,22 +43,29 @@ DEEP_SWEEP = os.getenv("DEEP_SWEEP", "0") == "1"
 # How many stored ad URLs to re-check against their live OLX page per url_checker run
 # (on top of the uncapped priority tier — see db.deal_ad_ids), how far back (by
 # first_seen) to bother checking at all, and how fast to check them. OLX rate-limits
-# individual ad-page fetches: CONCURRENCY + DELAY_SECONDS together cap the aggregate
-# request rate. Recalibrated 2026-09-26 against the *current* browser-routed transport
-# (the 2026-07-14 numbers below were from the old direct-request transport, since
-# replaced): confirmed via real workflow_dispatch runs against production —
-#   2 req/s (conc=2, delay=0.5, the old default): 100% success
-#   4 req/s (conc=3, delay=0.25): 100% success, ~15-20% faster wall-clock
-#   10 req/s (conc=4, delay=0.1): 89% blocked with HTTP 403 within ~1 min
-# The block didn't persist to the next run at a safe rate, but don't push closer to
-# that 4-10 req/s cliff without re-verifying live — see verify-urls.yml's
-# delay_seconds/concurrency workflow_dispatch inputs for probing without touching
-# these defaults. At ~4 req/s this batch clears a multi-thousand-ad backlog within
-# ~2 days at this cadence (every 8h, see verify-urls.yml).
+# individual ad-page fetches (confirmed 2026-07-14: 6 workers with no pacing got
+# 403'd on ~85% of requests after the first few hundred); CONCURRENCY + DELAY_SECONDS
+# together cap the aggregate request rate — keep them conservative, verify against
+# real runs before pushing faster.
+#
+# 2026-09-26: probed harder against the current browser-routed transport via repeated
+# workflow_dispatch runs within one session. Result was NOT a clean rate cliff:
+#   2 req/s (this default): clean twice
+#   4 req/s: clean once, then 92% blocked ~15 min later in the same session
+#   10 req/s: 89% blocked within ~1 min
+# The 4 req/s failure had the same signature as the 10 req/s one (blocked within ~1
+# min, never recovered for the rest of that batch) despite being "confirmed safe"
+# moments earlier — meaning the limit isn't a simple function of one run's rate, more
+# likely something cumulative/rolling across recent traffic from this IP range that
+# repeated same-session probing disturbs. Don't trust a single clean run at a higher
+# rate as "safe" — see verify-urls.yml's delay_seconds/concurrency workflow_dispatch
+# inputs to probe further, but space attempts out (hours apart, not minutes) so one
+# test can't taint the next. At ~2 req/s this batch clears a multi-thousand-ad
+# backlog within ~2 days at this cadence (every 12h, see verify-urls.yml).
 URL_CHECK_BATCH_SIZE = int(os.getenv("URL_CHECK_BATCH_SIZE", 1500))
 URL_CHECK_LOOKBACK_DAYS = int(os.getenv("URL_CHECK_LOOKBACK_DAYS", 90))
-URL_CHECK_CONCURRENCY = int(_env("URL_CHECK_CONCURRENCY", "3"))
-URL_CHECK_DELAY_SECONDS = float(_env("URL_CHECK_DELAY_SECONDS", "0.25"))
+URL_CHECK_CONCURRENCY = int(_env("URL_CHECK_CONCURRENCY", "2"))
+URL_CHECK_DELAY_SECONDS = float(_env("URL_CHECK_DELAY_SECONDS", "0.5"))
 
 # Resale friction: assume you sell at ~85% of median (haggling, fees, time)
 RESALE_FACTOR = 0.85
