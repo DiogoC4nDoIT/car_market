@@ -23,11 +23,23 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      # OLX's WAF blocks plain HTTP clients from datacenter IPs; the crawler
-      # routes requests through headless Chrome instead (OLX_BROWSER=1).
-      - run: |
-          pip install playwright
-          playwright install --with-deps chromium
+      # The daily digest (08:00 UTC) only reads Supabase and sends a Telegram
+      # message — it never touches OLX, so it doesn't need a browser at all.
+      # Only install one for the crawl/deep-sweep runs, and cache the browser
+      # binary across those — it doesn't change often, and downloading it
+      # fresh every run burns 1-2 min of billed Actions time for nothing.
+      - if: github.event.schedule != '0 8 * * *'
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+      - if: github.event.schedule != '0 8 * * *'
+        run: pip install playwright
+      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
       - name: Run crawler
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

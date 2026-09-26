@@ -3,12 +3,12 @@
 Uses OLX's public JSON API (the same one the website's frontend calls)
 instead of rendering pages with a browser. One request returns 40 ads.
 """
+import asyncio
 import json
 import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
 
 import requests
@@ -54,9 +54,17 @@ if config.PROXY_URL:
 # OLX_BROWSER=1 therefore routes every request through a Playwright Chromium
 # page: bootstrap loads the Carros page once, then same-origin fetch() calls
 # ride on the browser's TLS/HTTP2 fingerprint, cookies and JS execution.
-# Playwright's sync API is bound to the thread that started it, so all calls
-# are funneled through a single-worker executor (url_checker fans out across
-# a thread pool).
+#
+# Playwright's *sync* API is bound to the thread that started it, which is why
+# this used to funnel every call through one page on a single-worker executor
+# — url_checker's own ThreadPoolExecutor fanned out, but every worker blocked
+# on that same page underneath, so a 1500-URL batch ran fully serial (~20-25
+# min on GitHub Actions). The *async* API doesn't have that restriction: one
+# thread runs an asyncio loop and can genuinely juggle several pages at once,
+# each still same-origin (cookies are shared at the browser-context level, so
+# any page that has loaded an olx.pt URL can `fetch()` others). Pool size
+# matches URL_CHECK_CONCURRENCY — the concurrency the config already declared
+# intent for — rather than adding new load OLX hasn't already been sized for.
 _JS_FETCH = """async ({url, accept}) => {
     const res = await fetch(url, {headers: {'Accept': accept}});
     return {status: res.status, text: await res.text()};
@@ -65,26 +73,53 @@ _JS_FETCH = """async ({url, accept}) => {
 
 class _Browser:
     def __init__(self):
-        self._pool = ThreadPoolExecutor(max_workers=1)
-        self._pool.submit(self._start).result()
+        self._pool_size = max(1, config.URL_CHECK_CONCURRENCY)
+        self._start_error = None
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+        self._ready.wait()
+        if self._start_error:
+            raise self._start_error
 
-    def _start(self):
-        from playwright.sync_api import sync_playwright
-        pw = sync_playwright().start()
-        ctx = pw.chromium.launch(
+    def _run_loop(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_until_complete(self._async_start())
+        except Exception as e:
+            self._start_error = e
+        finally:
+            self._ready.set()
+        if self._start_error is None:
+            self._loop.run_forever()
+
+    async def _async_start(self):
+        from playwright.async_api import async_playwright
+        self._pw = await async_playwright().start()
+        browser = await self._pw.chromium.launch(
             args=["--disable-blink-features=AutomationControlled"],
-        ).new_context(locale="pt-PT", user_agent=HEADERS["User-Agent"])
-        self._page = ctx.new_page()
-        r = self._page.goto(CARROS_PAGE, wait_until="domcontentloaded", timeout=60_000)
-        if r is None or r.status != 200:
-            raise RuntimeError(f"browser bootstrap got HTTP {r.status if r else '?'}")
-        log.info("browser transport ready")
+        )
+        ctx = await browser.new_context(locale="pt-PT", user_agent=HEADERS["User-Agent"])
+        self._pages = asyncio.Queue()
+        for _ in range(self._pool_size):
+            page = await ctx.new_page()
+            r = await page.goto(CARROS_PAGE, wait_until="domcontentloaded", timeout=60_000)
+            if r is None or r.status != 200:
+                raise RuntimeError(f"browser bootstrap got HTTP {r.status if r else '?'}")
+            await self._pages.put(page)
+        log.info("browser transport ready (%d pages)", self._pool_size)
+
+    async def _afetch(self, url: str, accept: str) -> tuple[int, str]:
+        page = await self._pages.get()
+        try:
+            out = await page.evaluate(_JS_FETCH, {"url": url, "accept": accept})
+            return out["status"], out["text"]
+        finally:
+            self._pages.put_nowait(page)
 
     def fetch(self, url: str, accept: str) -> tuple[int, str]:
-        def go():
-            out = self._page.evaluate(_JS_FETCH, {"url": url, "accept": accept})
-            return out["status"], out["text"]
-        return self._pool.submit(go).result()
+        return asyncio.run_coroutine_threadsafe(self._afetch(url, accept), self._loop).result()
 
 
 _browser_instance, _browser_lock = None, threading.Lock()
