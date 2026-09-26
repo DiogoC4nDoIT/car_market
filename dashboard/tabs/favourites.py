@@ -21,6 +21,20 @@ def _sorted_fav_view(ctx: Context, ad_ids: set, fav_added_at: pd.Series) -> pd.D
     ])
 
 
+PAGE_SIZE = 10
+
+
+def _render_with_show_more(view: pd.DataFrame, count_key: str, key_prefix: str, ctx: Context):
+    st.session_state.setdefault(count_key, PAGE_SIZE)
+    shown = st.session_state[count_key]
+    for _, d in view.iloc[:shown].iterrows():
+        render_deal_card(d, ctx.fav_ids, ctx.manual_fav_ids, key_prefix=key_prefix)
+    if shown < len(view):
+        if st.button(f"Show more ({len(view) - shown} left)", key=f"{key_prefix}show_more"):
+            st.session_state[count_key] += PAGE_SIZE
+            st.rerun()
+
+
 def render_favourites_tab(ctx: Context):
     if not ctx.fav_ids and ctx.searches.empty:
         st.info("No favourites yet — tap Fav on a deal to save it, or save a filter combo "
@@ -41,8 +55,7 @@ def render_favourites_tab(ctx: Context):
         st.caption(f"{len(view)} favourited")
         if view.empty:
             st.caption("All favourited ads are currently skipped.")
-        for _, d in view.iterrows():
-            render_deal_card(d, ctx.fav_ids, ctx.manual_fav_ids, key_prefix="favad_")
+        _render_with_show_more(view, "favad_show_count", "favad_", ctx)
 
     st.write("")
     st.markdown("**Auto-tracked (saved search matches)**")
@@ -53,11 +66,13 @@ def render_favourites_tab(ctx: Context):
         st.caption("Nothing auto-tracked right now.")
     else:
         view = _sorted_fav_view(ctx, auto_ids, fav_added_at)
+        show_gone = st.toggle("Show gone cars", value=False, key="favauto_show_gone")
+        if not show_gone:
+            view = view[view["status"] != "desaparecido"]
         st.caption(f"{len(view)} auto-tracked")
         if view.empty:
-            st.caption("All auto-tracked ads are currently skipped.")
-        for _, d in view.iterrows():
-            render_deal_card(d, ctx.fav_ids, ctx.manual_fav_ids, key_prefix="favauto_")
+            st.caption("Nothing to show — all auto-tracked ads are currently skipped or gone.")
+        _render_with_show_more(view, "favauto_show_count", "favauto_", ctx)
 
     st.write("")
     st.markdown("**Favourite deals**")
