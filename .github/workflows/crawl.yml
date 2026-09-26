@@ -11,10 +11,6 @@ on:
         description: "Run full price-bucketed sweep"
         type: boolean
         default: false
-      skip_install_deps:
-        description: "TEST ONLY: skip 'playwright install-deps' to check if ubuntu-latest already has the needed libs"
-        type: boolean
-        default: false
 
 jobs:
   crawl:
@@ -43,12 +39,12 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('requirements-crawler.txt') }}
-      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit != 'true' && !inputs.skip_install_deps
-        run: playwright install --with-deps chromium
-      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit != 'true' && inputs.skip_install_deps
+      # `--with-deps` (apt-installing ~20 system libraries) is unnecessary here:
+      # verified 2026-09-26 that ubuntu-latest already ships everything Chromium
+      # needs — a run with zero apt install ever run still launched the browser
+      # fine ("browser transport ready"). Dropping it saves ~15-20s on every run.
+      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit != 'true'
         run: playwright install chromium
-      - if: github.event.schedule != '0 8 * * *' && steps.playwright-cache.outputs.cache-hit == 'true' && !inputs.skip_install_deps
-        run: playwright install-deps chromium
       - name: Run crawler
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
